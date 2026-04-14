@@ -95,19 +95,19 @@ if order_df.empty:
 
 today = pd.Timestamp.now().normalize()
 
-# 1) KPI Dashboard
-st.subheader("1) KPI Dashboard")
+# 1) KPI 대시보드
+st.subheader("1) KPI 대시보드")
 today_mask = order_df["date"].dt.normalize() == today
 today_sales = float(order_df.loc[today_mask, "amount"].sum())
 today_real_quantity = float(order_df.loc[today_mask, "real_quantity"].sum())
 total_customers = int(order_df["buyer_id"].astype(str).nunique())
 kpi1, kpi2, kpi3 = st.columns(3)
-kpi1.metric("Today sales", format_krw(today_sales))
-kpi2.metric("Today real quantity", f"{today_real_quantity:,.0f}")
-kpi3.metric("Total customers", total_customers)
+kpi1.metric("오늘 매출", format_krw(today_sales))
+kpi2.metric("오늘 실판매수량", f"{today_real_quantity:,.0f}")
+kpi3.metric("총 고객 수", total_customers)
 
-# 2) Daily Sales Trend
-st.subheader("2) Daily Sales Trend")
+# 2) 일별 매출 추이
+st.subheader("2) 일별 매출 추이")
 daily_sales = (
     order_df.groupby(order_df["date"].dt.date, as_index=False)
     .agg(
@@ -128,8 +128,8 @@ chart_daily = daily_sales.copy()
 chart_daily["date"] = pd.to_datetime(chart_daily["date"])
 st.line_chart(chart_daily, x="date", y=["total_amount", "ma7"])
 
-# 3) Product Group Sales
-st.subheader("3) Product Group Sales")
+# 3) 상품군 매출
+st.subheader("3) 상품군 매출")
 group_df = order_df.copy()
 group_df["product_group"] = group_df["product_name"].apply(product_group)
 group_summary = (
@@ -146,8 +146,8 @@ group_table["total_amount"] = group_table["total_amount"].apply(format_krw)
 st.dataframe(group_table, width="stretch")
 st.bar_chart(group_summary, x="product_group", y="total_amount")
 
-# 4) Product Sales
-st.subheader("4) Product Sales")
+# 4) 상품별 매출
+st.subheader("4) 상품별 매출")
 product_summary = (
     order_df.groupby("product_name", as_index=False)
     .agg(
@@ -162,8 +162,8 @@ product_table["total_amount"] = product_table["total_amount"].apply(format_krw)
 st.dataframe(product_table, width="stretch")
 st.bar_chart(product_summary.head(10), x="product_name", y="total_amount")
 
-# 5) Option Sales
-st.subheader("5) Option Sales")
+# 5) 옵션별 매출
+st.subheader("5) 옵션별 매출")
 option_summary = (
     order_df.groupby("option_name", as_index=False)
     .agg(
@@ -180,8 +180,8 @@ option_table["total_amount"] = option_table["total_amount"].apply(format_krw)
 st.dataframe(option_table, width="stretch")
 st.bar_chart(option_summary.head(10), x="option_name", y="total_amount")
 
-# 6) Option Daily Detail
-st.subheader("6) Option Daily Detail")
+# 6) 옵션 일자 상세
+st.subheader("6) 옵션 일자 상세")
 option_daily = (
     order_df.groupby([order_df["date"].dt.date, "option_name"], as_index=False)
     .agg(
@@ -200,13 +200,13 @@ option_daily_table["real_quantity"] = option_daily_table["real_quantity"].apply(
 option_daily_table["total_amount"] = option_daily_table["total_amount"].apply(format_krw)
 st.dataframe(option_daily_table, width="stretch")
 
-# 7) Customer Detail Table
-st.subheader("7) Customer Detail Table")
+# 7) 고객 상세 테이블
+st.subheader("7) 고객 상세 테이블")
 f_col1, f_col2 = st.columns(2)
 with f_col1:
-    buyer_name_search = st.text_input("buyer_name 검색", "")
+    buyer_name_search = st.text_input("구매자명 검색", "")
 with f_col2:
-    selected_date = st.date_input("date 필터(단일일)", value=None)
+    selected_date = st.date_input("집계일 필터(단일일)", value=None)
 
 customer_detail = order_df.copy()
 if buyer_name_search:

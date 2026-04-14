@@ -5,6 +5,7 @@ pymysql
 python-dotenv
 pydantic-settings
 httpx
+bcrypt
 pytest
 pytest-cov
 flake8

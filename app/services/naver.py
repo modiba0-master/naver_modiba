@@ -1,33 +1,228 @@
-from datetime import datetime, timedelta
+import base64
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import bcrypt
+import httpx
+
+from app.config import settings
+
+_STATUS_MAP = {
+    "PAYED": "신규주문",
+    "DELIVERY_READY": "배송준비",
+    "DELIVERING": "배송중",
+    "DELIVERED": "배송완료",
+    "PURCHASE_DECIDED": "구매확정",
+}
+KST = timezone(timedelta(hours=9))
+
+
+def _get_value(payload: dict[str, Any], *paths: str) -> Any:
+    for path in paths:
+        node: Any = payload
+        missing = False
+        for key in path.split("."):
+            if not isinstance(node, dict) or key not in node:
+                missing = True
+                break
+            node = node[key]
+        if not missing and node not in (None, ""):
+            return node
+    return None
+
+
+def _to_iso_datetime(value: Any) -> str:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_status(value: Any) -> str:
+    status = str(value or "").strip()
+    return _STATUS_MAP.get(status, status or "신규주문")
+
+
+def _extract_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        for key in (
+            "contents",
+            "items",
+            "productOrders",
+            "orders",
+            "lastChangeStatuses",
+        ):
+            maybe_items = data.get(key)
+            if isinstance(maybe_items, list):
+                return [item for item in maybe_items if isinstance(item, dict)]
+    return []
+
+
+def _extract_changed_order_nos(payload: dict[str, Any]) -> list[str]:
+    items = _extract_items(payload)
+    order_nos: list[str] = []
+    for item in items:
+        order_no = _get_value(
+            item,
+            "productOrderNo",
+            "productOrderId",
+            "orderId",
+            "product_order_no",
+        )
+        if order_no:
+            order_nos.append(str(order_no))
+    return order_nos
+
+
+def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
+    option_name = _get_value(
+        item,
+        "productOrder.productOption",
+        "productOrder.optionCode",
+        "productOption.optionName",
+        "optionName",
+        "option.optionName",
+    ) or ""
+    quantity = _get_value(item, "quantity", "productOrderQuantity", "orderQuantity") or 0
+    amount = _get_value(
+        item,
+        "productOrder.totalPaymentAmount",
+        "paymentAmount",
+        "totalPaymentAmount",
+        "amount",
+    ) or 0
+    return {
+        "orderId": str(
+            _get_value(item, "productOrder.productOrderId", "productOrderId", "orderId", "id")
+            or ""
+        ),
+        "productName": str(
+            _get_value(item, "productOrder.productName", "productName", "product.productName")
+            or ""
+        ),
+        "optionName": str(option_name),
+        "quantity": int(_get_value(item, "productOrder.quantity", "quantity", "orderQuantity") or quantity),
+        "paymentAmount": int(amount),
+        "orderStatus": _normalize_status(
+            _get_value(
+                item,
+                "productOrder.productOrderStatus",
+                "productOrderStatus",
+                "orderStatus",
+                "claimStatus",
+            )
+        ),
+        "ordererName": str(
+            _get_value(item, "order.ordererName", "ordererName", "orderer.name", "buyerName")
+            or ""
+        ),
+        "ordererId": str(
+            _get_value(item, "order.ordererId", "ordererId", "orderer.id", "buyerId") or ""
+        ),
+        "receiverName": str(
+            _get_value(
+                item,
+                "productOrder.shippingAddress.name",
+                "shippingAddress.name",
+                "receiverName",
+                "receiver.name",
+            )
+            or ""
+        ),
+        "shippingAddress": str(
+            _get_value(
+                item,
+                "productOrder.shippingAddress.baseAddress",
+                "shippingAddress.baseAddress",
+                "shippingAddress.address1",
+                "shippingAddress",
+                "address",
+            )
+            or ""
+        ),
+        "paymentDate": _to_iso_datetime(
+            _get_value(
+                item,
+                "order.paymentDate",
+                "paymentDate",
+                "paymentDateTime",
+                "lastChangedDate",
+            )
+        ),
+    }
+
+
+def _generate_client_secret_sign(
+    client_id: str,
+    client_secret: str,
+    timestamp_ms: int,
+) -> str:
+    raw = f"{client_id}_{timestamp_ms}".encode("utf-8")
+    hashed = bcrypt.hashpw(raw, client_secret.encode("utf-8"))
+    return base64.b64encode(hashed).decode("utf-8")
+
+
+def _get_access_token(client: httpx.Client) -> str:
+    client_id = settings.naver_commerce_api_client_id
+    client_secret = settings.naver_commerce_api_client_secret
+    if not client_id or not client_secret:
+        raise RuntimeError("네이버 커머스 API 인증값(client id/secret)이 설정되지 않았습니다.")
+
+    timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    sign = _generate_client_secret_sign(client_id, client_secret, timestamp_ms)
+    response = client.post(
+        "/external/v1/oauth2/token",
+        data={
+            "client_id": client_id,
+            "timestamp": str(timestamp_ms),
+            "client_secret_sign": sign,
+            "grant_type": "client_credentials",
+            "type": settings.naver_commerce_oauth_type,
+        },
+    )
+    response.raise_for_status()
+    token = response.json().get("access_token")
+    if not token:
+        raise RuntimeError("네이버 커머스 인증 토큰 발급에 실패했습니다.")
+    return str(token)
 
 
 def fetch_naver_orders() -> list[dict]:
-    now = datetime.utcnow()
-    return [
-        {
-            "orderId": f"NAVER-{now.strftime('%Y%m%d%H%M%S')}-001",
-            "productName": "닭가슴살 1kg",
-            "optionName": "1kg 3개",
-            "quantity": 1,
-            "paymentAmount": 30000,
-            "orderStatus": "신규주문",
-            "ordererName": "홍길동",
-            "ordererId": "buyer-001",
-            "receiverName": "홍길동",
-            "shippingAddress": "서울특별시 강남구 테헤란로 123",
-            "paymentDate": now.isoformat(),
-        },
-        {
-            "orderId": f"NAVER-{(now - timedelta(minutes=5)).strftime('%Y%m%d%H%M%S')}-002",
-            "productName": "닭안심 500g",
-            "optionName": "500g x 2",
-            "quantity": 2,
-            "paymentAmount": 24000,
-            "orderStatus": "배송준비",
-            "ordererName": "김모디",
-            "ordererId": "buyer-002",
-            "receiverName": "김모디",
-            "shippingAddress": "부산광역시 해운대구 센텀로 77",
-            "paymentDate": (now - timedelta(minutes=5)).isoformat(),
-        },
-    ]
+    now_kst = datetime.now(KST)
+    lookback_hours = min(max(settings.naver_commerce_order_lookback_hours, 1), 24)
+    from_dt = now_kst - timedelta(hours=lookback_hours)
+
+    with httpx.Client(base_url=settings.naver_commerce_api_base_url, timeout=30) as client:
+        access_token = _get_access_token(client)
+        changed_response = client.get(
+            "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={
+                "lastChangedType": "PAYED",
+                "lastChangedFrom": from_dt.strftime("%Y-%m-%dT%H:%M:%S.000%z")[:-2]
+                + ":"
+                + from_dt.strftime("%Y-%m-%dT%H:%M:%S.000%z")[-2:],
+                "lastChangedTo": now_kst.strftime("%Y-%m-%dT%H:%M:%S.000%z")[:-2]
+                + ":"
+                + now_kst.strftime("%Y-%m-%dT%H:%M:%S.000%z")[-2:],
+                "limitCount": 300,
+            },
+        )
+        changed_response.raise_for_status()
+        order_nos = _extract_changed_order_nos(changed_response.json())
+        if not order_nos:
+            return []
+
+        detail_response = client.post(
+            "/external/v1/pay-order/seller/product-orders/query",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"productOrderIds": order_nos},
+        )
+        detail_response.raise_for_status()
+        raw_items = _extract_items(detail_response.json())
+        normalized = [_to_internal_order(item) for item in raw_items]
+        return [item for item in normalized if item["orderId"]]
