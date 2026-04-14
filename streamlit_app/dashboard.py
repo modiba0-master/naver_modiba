@@ -89,7 +89,7 @@ except Exception as exc:
 if order_df.empty:
     st.warning(
         "API 응답에 상세 주문 데이터가 없습니다. "
-        "`/analytics/orders-raw` 응답 구조에 필요한 필드가 포함되어야 합니다."
+        "`/analytics/orders-by-date` 응답 구조에 필요한 필드가 포함되어야 합니다."
     )
     st.stop()
 
