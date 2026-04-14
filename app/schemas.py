@@ -15,8 +15,10 @@ class OrderOut(BaseModel):
     buyer_id: str
     receiver_name: str
     address: str
+    order_status: str
     payment_date: datetime
     order_date: date
+    business_date: date
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -33,6 +35,7 @@ class OrdersByDateResponse(BaseModel):
 
 class OrderRawItem(BaseModel):
     date: date
+    business_date: date
     payment_date: datetime
     buyer_name: str
     buyer_id: str
@@ -42,6 +45,7 @@ class OrderRawItem(BaseModel):
     option_name: str
     quantity: int
     amount: int
+    order_status: str
 
 
 class OrdersRawResponse(BaseModel):

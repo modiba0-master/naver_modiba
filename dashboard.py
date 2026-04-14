@@ -46,7 +46,7 @@ def product_group(product_name: str) -> str:
 
 def fetch_order_data(base_url: str) -> pd.DataFrame:
     response = requests.get(
-        f"{base_url}/analytics/orders-by-date",
+        f"{base_url}/analytics/orders-raw",
         timeout=20,
     )
     response.raise_for_status()

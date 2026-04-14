@@ -11,6 +11,7 @@ def test_sync_orders_inserts_data(db_session, monkeypatch):
             "optionName": "1kg 2개",
             "quantity": 1,
             "paymentAmount": 20000,
+            "orderStatus": "신규주문",
             "ordererName": "테스터",
             "ordererId": "buyer-001",
             "receiverName": "테스터",

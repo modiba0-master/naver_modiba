@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -6,9 +6,30 @@ from sqlalchemy.orm import Session
 from app.models import Order
 from app.services.naver import fetch_naver_orders
 
+VALID_ORDER_STATUSES = {
+    "신규주문",
+    "배송준비",
+    "배송중",
+    "배송완료",
+    "구매확정",
+}
+
 
 def _parse_payment_date(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def calculate_business_date(payment_date: datetime):
+    weekday = payment_date.weekday()  # Monday=0 ... Sunday=6
+    if weekday == 5:  # Saturday
+        return payment_date.date() + timedelta(days=2)
+    if weekday == 6:  # Sunday
+        return payment_date.date() + timedelta(days=1)
+    if payment_date.hour < 16:
+        return payment_date.date()
+    if weekday == 4:  # Friday after 16:00
+        return payment_date.date() + timedelta(days=3)
+    return payment_date.date() + timedelta(days=1)
 
 
 def sync_orders(db: Session) -> int:
@@ -21,7 +42,12 @@ def sync_orders(db: Session) -> int:
         if exists:
             continue
 
+        order_status = payload.get("orderStatus", "").strip()
+        if order_status not in VALID_ORDER_STATUSES:
+            continue
+
         payment_date = _parse_payment_date(payload["paymentDate"])
+        business_date = calculate_business_date(payment_date)
         order = Order(
             order_id=order_id,
             product_name=payload["productName"],
@@ -32,8 +58,10 @@ def sync_orders(db: Session) -> int:
             buyer_id=payload["ordererId"],
             receiver_name=payload["receiverName"],
             address=payload["shippingAddress"],
+            order_status=order_status,
             payment_date=payment_date,
             order_date=payment_date.date(),
+            business_date=business_date,
         )
         db.add(order)
         inserted_count += 1
