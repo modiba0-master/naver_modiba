@@ -166,29 +166,51 @@ def _generate_client_secret_sign(
     return base64.b64encode(hashed).decode("utf-8")
 
 
-def _get_access_token(client: httpx.Client) -> str:
-    client_id = settings.naver_commerce_api_client_id
-    client_secret = settings.naver_commerce_api_client_secret
-    if not client_id or not client_secret:
-        raise RuntimeError("네이버 커머스 API 인증값(client id/secret)이 설정되지 않았습니다.")
-
-    timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    sign = _generate_client_secret_sign(client_id, client_secret, timestamp_ms)
-    response = client.post(
-        "/external/v1/oauth2/token",
-        data={
-            "client_id": client_id,
-            "timestamp": str(timestamp_ms),
-            "client_secret_sign": sign,
-            "grant_type": "client_credentials",
-            "type": settings.naver_commerce_oauth_type,
-        },
+def _resolve_client_credentials() -> tuple[str, str]:
+    client_id = settings.naver_commerce_api_client_id or settings.naver_client_id
+    client_secret = (
+        settings.naver_commerce_api_client_secret or settings.naver_client_secret
     )
-    response.raise_for_status()
-    token = response.json().get("access_token")
-    if not token:
-        raise RuntimeError("네이버 커머스 인증 토큰 발급에 실패했습니다.")
-    return str(token)
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "네이버 커머스 API 인증값이 없습니다. "
+            "NAVER_COMMERCE_API_CLIENT_ID/SECRET 또는 NAVER_CLIENT_ID/SECRET을 설정하세요."
+        )
+    return client_id, client_secret
+
+
+def _raise_http_error(prefix: str, response: httpx.Response) -> None:
+    body = response.text[:500]
+    raise RuntimeError(f"{prefix}: status={response.status_code}, body={body}")
+
+
+def _get_access_token(client: httpx.Client) -> str:
+    client_id, client_secret = _resolve_client_credentials()
+
+    last_response: httpx.Response | None = None
+    for _ in range(2):
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        sign = _generate_client_secret_sign(client_id, client_secret, timestamp_ms)
+        response = client.post(
+            "/external/v1/oauth2/token",
+            data={
+                "client_id": client_id,
+                "timestamp": str(timestamp_ms),
+                "client_secret_sign": sign,
+                "grant_type": "client_credentials",
+                "type": settings.naver_commerce_oauth_type,
+            },
+        )
+        if response.is_success:
+            token = response.json().get("access_token")
+            if not token:
+                _raise_http_error("네이버 커머스 인증 토큰 응답에 access_token이 없습니다", response)
+            return str(token)
+        last_response = response
+
+    if last_response is not None:
+        _raise_http_error("네이버 커머스 인증 토큰 발급 실패", last_response)
+    raise RuntimeError("네이버 커머스 인증 토큰 발급 실패")
 
 
 def fetch_naver_orders() -> list[dict]:
