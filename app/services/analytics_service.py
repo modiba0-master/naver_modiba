@@ -1,42 +1,44 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Order
 from app.schemas import OrderRawItem, OrdersByDateItem
-from app.services.sync import VALID_ORDER_STATUSES
+from app.services.sync import VALID_ORDER_STATUSES, calculate_business_date
 
 
 def get_orders_by_date(
     db: Session, start_date: datetime | None, end_date: datetime | None
 ) -> list[OrdersByDateItem]:
-    stmt = (
-        select(
-            Order.business_date.label("order_day"),
-            func.sum(Order.amount).label("total_amount"),
-            func.sum(Order.quantity).label("total_quantity"),
-        )
-        .where(Order.order_status.in_(VALID_ORDER_STATUSES))
-        .group_by(Order.business_date)
-        .order_by(Order.business_date)
-    )
+    raw_items = get_orders_raw(db, start_date=start_date, end_date=end_date)
+    grouped: dict[date, dict[str, Decimal | int]] = {}
 
-    if start_date:
-        stmt = stmt.where(Order.business_date >= start_date.date())
-    if end_date:
-        stmt = stmt.where(Order.business_date <= end_date.date())
-
-    rows = db.execute(stmt).all()
-    return [
-        OrdersByDateItem(
-            order_date=_parse_order_day(row.order_day),
-            total_amount=Decimal(row.total_amount or 0),
-            total_quantity=int(row.total_quantity or 0),
+    for item in raw_items:
+        day = item.business_date
+        if day not in grouped:
+            grouped[day] = {
+                "total_amount": Decimal(0),
+                "total_quantity": 0,
+            }
+        grouped[day]["total_amount"] = Decimal(grouped[day]["total_amount"]) + Decimal(
+            item.amount
         )
-        for row in rows
-    ]
+        grouped[day]["total_quantity"] = int(grouped[day]["total_quantity"]) + int(
+            item.quantity
+        )
+
+    results = []
+    for day in sorted(grouped.keys()):
+        results.append(
+            OrdersByDateItem(
+                order_date=day,
+                total_amount=Decimal(grouped[day]["total_amount"]),
+                total_quantity=int(grouped[day]["total_quantity"]),
+            )
+        )
+    return results
 
 
 def _parse_order_day(raw_value: str | date) -> date:
@@ -51,42 +53,39 @@ def get_orders_raw(
     stmt = (
         select(Order)
         .where(Order.order_status.in_(VALID_ORDER_STATUSES))
-        .order_by(Order.business_date.desc(), Order.payment_date.desc())
+        .order_by(Order.payment_date.desc())
     )
-    if start_date:
-        stmt = stmt.where(Order.business_date >= start_date.date())
-    if end_date:
-        stmt = stmt.where(Order.business_date <= end_date.date())
 
     rows = db.scalars(stmt).all()
-    return [
-        OrderRawItem(
-            date=row.business_date,
-            business_date=row.business_date,
-            payment_date=row.payment_date,
-            buyer_name=row.buyer_name,
-            buyer_id=row.buyer_id,
-            receiver_name=row.receiver_name,
-            address=row.address,
-            product_name=row.product_name,
-            option_name=row.option_name,
-            quantity=row.quantity,
-            amount=row.amount,
-            order_status=row.order_status,
+    items: list[OrderRawItem] = []
+    for row in rows:
+        business_date = calculate_business_date(row.payment_date)
+        if start_date and business_date < start_date.date():
+            continue
+        if end_date and business_date > end_date.date():
+            continue
+
+        items.append(
+            OrderRawItem(
+                date=business_date,
+                business_date=business_date,
+                payment_date=row.payment_date,
+                buyer_name=row.buyer_name,
+                buyer_id=row.buyer_id,
+                receiver_name=row.receiver_name,
+                address=row.address,
+                product_name=row.product_name,
+                option_name=row.option_name,
+                quantity=row.quantity,
+                amount=row.amount,
+                order_status=row.order_status,
+            )
         )
-        for row in rows
-    ]
+    return items
 
 
 def get_total_revenue(
     db: Session, start_date: datetime | None, end_date: datetime | None
 ) -> Decimal:
-    stmt = select(
-        func.sum(Order.amount).label("revenue"),
-    ).where(Order.order_status.in_(VALID_ORDER_STATUSES))
-    if start_date:
-        stmt = stmt.where(Order.business_date >= start_date.date())
-    if end_date:
-        stmt = stmt.where(Order.business_date <= end_date.date())
-    row = db.execute(stmt).one()
-    return Decimal(row.revenue or 0)
+    raw_items = get_orders_raw(db, start_date=start_date, end_date=end_date)
+    return Decimal(sum(item.amount for item in raw_items))

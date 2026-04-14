@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,15 +20,20 @@ def _parse_payment_date(value: str) -> datetime:
 
 
 def calculate_business_date(payment_date: datetime):
+    cutoff = time(hour=16, minute=0)
     weekday = payment_date.weekday()  # Monday=0 ... Sunday=6
-    if weekday == 5:  # Saturday
+
+    if weekday == 5:  # Saturday -> Monday
         return payment_date.date() + timedelta(days=2)
-    if weekday == 6:  # Sunday
+    if weekday == 6:  # Sunday -> Monday
         return payment_date.date() + timedelta(days=1)
-    if payment_date.hour < 16:
+
+    if payment_date.time() < cutoff:
         return payment_date.date()
-    if weekday == 4:  # Friday after 16:00
+
+    if weekday == 4:  # Friday 16:00+ -> next Monday
         return payment_date.date() + timedelta(days=3)
+
     return payment_date.date() + timedelta(days=1)
 
 
