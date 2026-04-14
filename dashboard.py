@@ -1,8 +1,8 @@
 import re
 from datetime import date
 
+import httpx
 import pandas as pd
-import requests
 import streamlit as st
 
 DEFAULT_API_BASE_URL = "https://navermodiba-production.up.railway.app"
@@ -45,7 +45,7 @@ def product_group(product_name: str) -> str:
 
 
 def fetch_order_data(base_url: str) -> pd.DataFrame:
-    response = requests.get(
+    response = httpx.get(
         f"{base_url}/analytics/orders-raw",
         timeout=20,
     )
