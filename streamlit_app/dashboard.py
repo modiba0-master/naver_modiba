@@ -46,7 +46,7 @@ def product_group(product_name: str) -> str:
 
 def fetch_order_data(base_url: str) -> pd.DataFrame:
     response = requests.get(
-        f"{base_url}/analytics/orders-by-date",
+        f"{base_url}/analytics/orders-raw",
         timeout=20,
     )
     response.raise_for_status()
@@ -89,7 +89,7 @@ except Exception as exc:
 if order_df.empty:
     st.warning(
         "API 응답에 상세 주문 데이터가 없습니다. "
-        "`/analytics/orders-by-date` 응답 구조에 필요한 필드가 포함되어야 합니다."
+        "`/analytics/orders-raw` 응답 구조에 필요한 필드가 포함되어야 합니다."
     )
     st.stop()
 
