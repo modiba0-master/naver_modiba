@@ -181,7 +181,12 @@ def _resolve_client_credentials() -> tuple[str, str]:
 
 def _raise_http_error(prefix: str, response: httpx.Response) -> None:
     body = response.text[:500]
-    raise RuntimeError(f"{prefix}: status={response.status_code}, body={body}")
+    trace_id = response.headers.get("GNCP-GW-Trace-ID", "")
+    response_time_ms = response.headers.get("GNCP-GW-HttpClient-ResponseTime", "")
+    raise RuntimeError(
+        f"{prefix}: status={response.status_code}, trace_id={trace_id}, "
+        f"response_time_ms={response_time_ms}, body={body}"
+    )
 
 
 def _get_access_token(client: httpx.Client) -> str:
