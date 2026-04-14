@@ -20,30 +20,9 @@ logger = logging.getLogger(__name__)
 
 def ensure_orders_table_schema() -> None:
     inspector = inspect(engine)
-    if "orders" not in inspector.get_table_names():
-        return
-
-    existing_columns = {column["name"] for column in inspector.get_columns("orders")}
-    required_columns = {
-        "id",
-        "order_id",
-        "product_name",
-        "option_name",
-        "quantity",
-        "amount",
-        "buyer_name",
-        "buyer_id",
-        "receiver_name",
-        "address",
-        "payment_date",
-        "order_date",
-        "created_at",
-    }
-    if required_columns.issubset(existing_columns):
-        return
-
-    logger.warning("Detected legacy orders schema. Recreating orders table.")
-    Order.__table__.drop(bind=engine, checkfirst=True)
+    if "orders" in inspector.get_table_names():
+        logger.warning("Recreating orders table to enforce latest schema.")
+        Order.__table__.drop(bind=engine, checkfirst=True)
 
 
 @asynccontextmanager
