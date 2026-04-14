@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+python-dotenv
+pydantic-settings
+httpx
+pytest
+pytest-cov
+flake8
+black
