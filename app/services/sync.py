@@ -15,6 +15,14 @@ VALID_ORDER_STATUSES = {
 }
 
 
+def normalize_order_status(value: str) -> str:
+    return (value or "").strip()
+
+
+def is_valid_order_status(value: str) -> bool:
+    return normalize_order_status(value) in VALID_ORDER_STATUSES
+
+
 def _parse_payment_date(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -47,8 +55,8 @@ def sync_orders(db: Session) -> int:
         if exists:
             continue
 
-        order_status = payload.get("orderStatus", "").strip()
-        if order_status not in VALID_ORDER_STATUSES:
+        order_status = normalize_order_status(payload.get("orderStatus", ""))
+        if not is_valid_order_status(order_status):
             continue
 
         payment_date = _parse_payment_date(payload["paymentDate"])

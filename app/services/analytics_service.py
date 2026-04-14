@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Order
 from app.schemas import OrderRawItem, OrdersByDateItem
-from app.services.sync import VALID_ORDER_STATUSES, calculate_business_date
+from app.services.sync import calculate_business_date, is_valid_order_status, normalize_order_status
 
 
 def get_orders_by_date(
@@ -50,15 +50,15 @@ def _parse_order_day(raw_value: str | date) -> date:
 def get_orders_raw(
     db: Session, start_date: datetime | None, end_date: datetime | None
 ) -> list[OrderRawItem]:
-    stmt = (
-        select(Order)
-        .where(Order.order_status.in_(VALID_ORDER_STATUSES))
-        .order_by(Order.payment_date.desc())
-    )
+    stmt = select(Order).order_by(Order.payment_date.desc())
 
     rows = db.scalars(stmt).all()
     items: list[OrderRawItem] = []
     for row in rows:
+        normalized_status = normalize_order_status(row.order_status)
+        if not is_valid_order_status(normalized_status):
+            continue
+
         business_date = calculate_business_date(row.payment_date)
         if start_date and business_date < start_date.date():
             continue
@@ -78,7 +78,7 @@ def get_orders_raw(
                 option_name=row.option_name,
                 quantity=row.quantity,
                 amount=row.amount,
-                order_status=row.order_status,
+                order_status=normalized_status,
             )
         )
     return items
