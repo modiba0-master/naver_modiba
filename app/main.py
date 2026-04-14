@@ -3,9 +3,11 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlalchemy import inspect
 
 from app.config import settings
 from app.database import Base, engine
+from app.models import Order
 from app.routers.analytics import router as analytics_router
 from app.routers.health import router as health_router
 from app.worker import run_order_polling
@@ -16,8 +18,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def ensure_orders_table_schema() -> None:
+    inspector = inspect(engine)
+    if "orders" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("orders")}
+    required_columns = {
+        "id",
+        "order_id",
+        "product_name",
+        "option_name",
+        "quantity",
+        "amount",
+        "buyer_name",
+        "buyer_id",
+        "receiver_name",
+        "address",
+        "payment_date",
+        "order_date",
+        "created_at",
+    }
+    if required_columns.issubset(existing_columns):
+        return
+
+    logger.warning("Detected legacy orders schema. Recreating orders table.")
+    Order.__table__.drop(bind=engine, checkfirst=True)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    ensure_orders_table_schema()
     Base.metadata.create_all(bind=engine)
     worker_task = None
     if settings.enable_worker:
