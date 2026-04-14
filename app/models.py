@@ -1,7 +1,6 @@
-from datetime import datetime
-from decimal import Decimal
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, Numeric, String, func
+from sqlalchemy import Date, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -12,12 +11,14 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    customer_id: Mapped[str] = mapped_column(String(64), index=True)
-    customer_name: Mapped[str] = mapped_column(String(120))
-    order_date: Mapped[datetime] = mapped_column(DateTime, index=True)
-    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    cost: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    shipping_fee: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
-    margin: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    customer_tag: Mapped[str] = mapped_column(String(20), default="Normal")
+    product_name: Mapped[str] = mapped_column(String(255))
+    option_name: Mapped[str] = mapped_column(String(255), default="")
+    quantity: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[int] = mapped_column(Integer)
+    buyer_name: Mapped[str] = mapped_column(String(120))
+    buyer_id: Mapped[str] = mapped_column(String(64), index=True)
+    receiver_name: Mapped[str] = mapped_column(String(120))
+    address: Mapped[str] = mapped_column(String(255))
+    payment_date: Mapped[datetime] = mapped_column(DateTime)
+    order_date: Mapped[date] = mapped_column(Date, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

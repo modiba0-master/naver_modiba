@@ -1,9 +1,4 @@
 def test_sync_and_analytics_endpoints(client, monkeypatch):
-    monkeypatch.setattr(
-        "app.services.notification_service.notify_new_order",
-        lambda topic, order_id: None,
-    )
-
     sync_response = client.post("/analytics/sync-orders")
     assert sync_response.status_code == 200
     assert sync_response.json()["inserted_count"] >= 1
@@ -12,8 +7,11 @@ def test_sync_and_analytics_endpoints(client, monkeypatch):
     assert by_date_response.status_code == 200
     assert "items" in by_date_response.json()
 
+    raw_response = client.get("/analytics/orders-raw")
+    assert raw_response.status_code == 200
+    assert "items" in raw_response.json()
+
     margin_response = client.get("/analytics/margin")
     assert margin_response.status_code == 200
     body = margin_response.json()
     assert "total_revenue" in body
-    assert "total_margin" in body

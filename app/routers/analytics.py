@@ -4,9 +4,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas import MarginResponse, OrdersByDateResponse, SyncResponse
-from app.services.analytics_service import get_margin_summary, get_orders_by_date
-from app.services.order_service import sync_orders
+from app.schemas import (
+    OrdersByDateResponse,
+    OrdersRawResponse,
+    RevenueResponse,
+    SyncResponse,
+)
+from app.services.analytics_service import get_orders_by_date, get_orders_raw, get_total_revenue
+from app.services.sync import sync_orders
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -27,10 +32,21 @@ def orders_by_date(
     return OrdersByDateResponse(items=items)
 
 
-@router.get("/margin", response_model=MarginResponse)
+@router.get("/orders-raw", response_model=OrdersRawResponse)
+def orders_raw(
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    db: Session = Depends(get_db),
+):
+    items = get_orders_raw(db, start_date=start_date, end_date=end_date)
+    return OrdersRawResponse(items=items)
+
+
+@router.get("/margin", response_model=RevenueResponse)
 def margin_analysis(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
     db: Session = Depends(get_db),
 ):
-    return get_margin_summary(db, start_date=start_date, end_date=end_date)
+    total_revenue = get_total_revenue(db, start_date=start_date, end_date=end_date)
+    return RevenueResponse(total_revenue=total_revenue)

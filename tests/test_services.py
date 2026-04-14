@@ -1,34 +1,25 @@
 from datetime import datetime
-from decimal import Decimal
 
-from app.services.order_service import calculate_customer_tag, sync_orders
-
-
-def test_calculate_customer_tag():
-    assert calculate_customer_tag(Decimal("1000000")) == "VIP"
-    assert calculate_customer_tag(Decimal("500000")) == "Regular"
-    assert calculate_customer_tag(Decimal("50000")) == "Normal"
+from app.services.sync import sync_orders
 
 
 def test_sync_orders_inserts_data(db_session, monkeypatch):
     payload = [
         {
-            "order_id": "MOCK-001",
-            "customer_id": "CUST-1",
-            "customer_name": "Test User",
-            "order_date": datetime(2026, 1, 1, 12, 0, 0),
-            "amount": Decimal("500000.00"),
-            "cost": Decimal("300000.00"),
-            "shipping_fee": Decimal("3000.00"),
+            "orderId": "MOCK-001",
+            "productName": "닭가슴살",
+            "optionName": "1kg 2개",
+            "quantity": 1,
+            "paymentAmount": 20000,
+            "ordererName": "테스터",
+            "ordererId": "buyer-001",
+            "receiverName": "테스터",
+            "shippingAddress": "서울시 강남구",
+            "paymentDate": datetime(2026, 1, 1, 12, 0, 0).isoformat(),
         }
     ]
 
-    monkeypatch.setattr(
-        "app.services.order_service.fetch_mock_orders", lambda since=None: payload
-    )
-    monkeypatch.setattr(
-        "app.services.order_service.notify_new_order", lambda topic, order_id: None
-    )
+    monkeypatch.setattr("app.services.sync.fetch_naver_orders", lambda: payload)
 
     inserted = sync_orders(db_session)
     assert inserted == 1

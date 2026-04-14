@@ -3,7 +3,7 @@ import logging
 
 from app.config import settings
 from app.database import SessionLocal
-from app.services.order_service import sync_orders
+from app.services.sync import sync_orders
 
 logger = logging.getLogger(__name__)
 
