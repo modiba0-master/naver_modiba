@@ -39,5 +39,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.get("/")
+def root():
+    return {"message": "naver modiba server running"}
+
+
 app.include_router(health_router)
 app.include_router(analytics_router)
