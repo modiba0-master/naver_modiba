@@ -6,6 +6,7 @@ python-dotenv
 pydantic-settings
 httpx
 bcrypt
+apscheduler
 pytest
 pytest-cov
 flake8

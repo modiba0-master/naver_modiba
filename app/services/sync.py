@@ -59,14 +59,20 @@ def sync_orders(db: Session) -> int:
         if not is_valid_order_status(order_status):
             continue
 
+        quantity = int(payload["quantity"])
+        amount = int(payload["paymentAmount"])
+        if quantity <= 0 or amount < 0:
+            # Guardrail: skip suspicious payloads to avoid polluted analytics rows.
+            continue
+
         payment_date = _parse_payment_date(payload["paymentDate"])
         business_date = calculate_business_date(payment_date)
         order = Order(
             order_id=order_id,
             product_name=payload["productName"],
             option_name=payload["optionName"],
-            quantity=int(payload["quantity"]),
-            amount=int(payload["paymentAmount"]),
+            quantity=quantity,
+            amount=amount,
             buyer_name=payload["ordererName"],
             buyer_id=payload["ordererId"],
             receiver_name=payload["receiverName"],

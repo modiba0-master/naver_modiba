@@ -1,45 +1,85 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
-from sqlalchemy import inspect
 
 from app.config import settings
 from app.database import Base, engine
-from app.models import Order
 from app.routers.analytics import router as analytics_router
 from app.routers.health import router as health_router
-from app.worker import run_order_polling
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+_sync_job_lock = False
 
 
-def ensure_orders_table_schema() -> None:
-    inspector = inspect(engine)
-    if "orders" in inspector.get_table_names():
-        logger.warning("Recreating orders table to enforce latest schema.")
-        Order.__table__.drop(bind=engine, checkfirst=True)
+async def _scheduled_sync_orders(app: FastAPI) -> None:
+    global _sync_job_lock
+
+    if _sync_job_lock:
+        logger.warning("Scheduled /analytics/sync-orders skipped: previous job still running")
+        return
+
+    _sync_job_lock = True
+    try:
+        transport = httpx.ASGITransport(app=app)
+        headers = {}
+        if settings.sync_api_key:
+            headers["x-sync-key"] = settings.sync_api_key
+        async with httpx.AsyncClient(transport=transport, base_url="http://internal") as client:
+            response = await client.post("/analytics/sync-orders", headers=headers)
+
+        if response.is_success:
+            payload = response.json()
+            logger.info(
+                "Scheduled /analytics/sync-orders success inserted_count=%s",
+                payload.get("inserted_count"),
+            )
+        else:
+            logger.error(
+                "Scheduled /analytics/sync-orders failed status=%s body=%s",
+                response.status_code,
+                response.text[:500],
+            )
+    except Exception:
+        logger.exception("Scheduled /analytics/sync-orders failed with exception")
+    finally:
+        _sync_job_lock = False
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    ensure_orders_table_schema()
+async def lifespan(app: FastAPI):
+    # Data preservation: never drop runtime tables on startup.
     Base.metadata.create_all(bind=engine)
-    worker_task = None
+
+    scheduler = None
     if settings.enable_worker:
-        worker_task = asyncio.create_task(run_order_polling())
-        logger.info("Background polling worker started")
+        scheduler = AsyncIOScheduler(
+            job_defaults={
+                "coalesce": True,
+                "max_instances": 1,
+            }
+        )
+        scheduler.add_job(
+            _scheduled_sync_orders,
+            "interval",
+            minutes=10,
+            args=[app],
+            id="sync-orders-every-10-minutes",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info("APScheduler started: /analytics/sync-orders every 10 minutes")
     try:
         yield
     finally:
-        if worker_task is not None:
-            worker_task.cancel()
-            await asyncio.gather(worker_task, return_exceptions=True)
-            logger.info("Background polling worker stopped")
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+            logger.info("APScheduler stopped")
 
 
 app = FastAPI(

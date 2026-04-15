@@ -1,3 +1,5 @@
 streamlit
-httpx
 pandas
+plotly
+sqlalchemy
+pymysql

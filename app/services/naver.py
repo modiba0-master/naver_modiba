@@ -179,7 +179,29 @@ def _resolve_client_credentials() -> tuple[str, str]:
     return client_id, client_secret
 
 
+def _log_naver_403(response: httpx.Response) -> None:
+    if response.status_code == 403:
+        print("[NAVER 403 ERROR]")
+        print(response.text)
+
+
+def _print_naver_trace_from_json(response: httpx.Response) -> None:
+    if response.status_code < 400:
+        return
+    try:
+        data = response.json()
+    except ValueError:
+        return
+    if not isinstance(data, dict):
+        return
+    trace_id = data.get("traceId") or data.get("trace_id")
+    if trace_id:
+        print(f"[NAVER TRACE] {trace_id}")
+
+
 def _raise_http_error(prefix: str, response: httpx.Response) -> None:
+    _log_naver_403(response)
+    _print_naver_trace_from_json(response)
     body = response.text[:500]
     trace_id = response.headers.get("GNCP-GW-Trace-ID", "")
     response_time_ms = response.headers.get("GNCP-GW-HttpClient-ResponseTime", "")
@@ -219,11 +241,13 @@ def _get_access_token(client: httpx.Client) -> str:
 
 
 def fetch_naver_orders() -> list[dict]:
-    now_kst = datetime.now(KST)
+    """Railway 고정 Outbound IP 환경에서 네이버 API를 직접 호출한다."""
+    base_url = settings.naver_commerce_api_base_url.rstrip("/")
     lookback_hours = min(max(settings.naver_commerce_order_lookback_hours, 1), 24)
+    now_kst = datetime.now(KST)
     from_dt = now_kst - timedelta(hours=lookback_hours)
 
-    with httpx.Client(base_url=settings.naver_commerce_api_base_url, timeout=30) as client:
+    with httpx.Client(base_url=base_url, timeout=30) as client:
         access_token = _get_access_token(client)
         changed_response = client.get(
             "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
@@ -239,17 +263,21 @@ def fetch_naver_orders() -> list[dict]:
                 "limitCount": 300,
             },
         )
+        _log_naver_403(changed_response)
+        _print_naver_trace_from_json(changed_response)
         changed_response.raise_for_status()
         order_nos = _extract_changed_order_nos(changed_response.json())
         if not order_nos:
             return []
-
         detail_response = client.post(
             "/external/v1/pay-order/seller/product-orders/query",
             headers={"Authorization": f"Bearer {access_token}"},
             json={"productOrderIds": order_nos},
         )
+        _log_naver_403(detail_response)
+        _print_naver_trace_from_json(detail_response)
         detail_response.raise_for_status()
         raw_items = _extract_items(detail_response.json())
+
         normalized = [_to_internal_order(item) for item in raw_items]
         return [item for item in normalized if item["orderId"]]
