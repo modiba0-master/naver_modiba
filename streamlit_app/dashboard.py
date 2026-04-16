@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -172,187 +173,218 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
-st.markdown(
-    """
-    <style>
-    [data-testid="stDataFrame"] table { width: 100%; }
-    [data-testid="stDataFrame"] th,
-    [data-testid="stDataFrame"] td { text-align: center !important; vertical-align: middle !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-st_autorefresh(interval=60000, key="naver_modiba_dashboard_autorefresh")
 
-header_left, header_right = st.columns([5, 1])
-with header_left:
-    st.title("네이버 커머스 주문 분석 대시보드")
-with header_right:
-    st.markdown("")  # vertical align with title
-    if st.button("🔄 새로고침"):
-        st.rerun()
 
-with st.sidebar:
-    st.header("API 설정")
-    api_base_url = st.text_input("FastAPI 기본 URL", value=DEFAULT_API_BASE_URL).rstrip("/")
+def _require_login() -> bool:
+    if st.session_state.get("authenticated", False):
+        return True
 
-try:
-    raw_df = fetch_order_data(api_base_url)
-    order_df = normalize_order_data(raw_df)
-except Exception as exc:
-    st.error(f"주문 데이터 조회 실패: {exc}")
+    st.title("🔐 보안 접속")
+    password = st.text_input("비밀번호를 입력하세요", type="password")
+    if st.button("로그인", type="primary"):
+        actual_password = None
+        try:
+            actual_password = st.secrets.get("PASSWORD")
+        except Exception:
+            pass
+
+        if not actual_password:
+            actual_password = os.environ.get("PASSWORD")
+
+        if password == actual_password and actual_password is not None:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 틀렸습니다.")
+
     st.stop()
+    return False
 
-if order_df.empty:
-    st.warning(
-        "API 응답에 상세 주문 데이터가 없습니다. "
-        "`/analytics/orders-by-date` 응답 구조에 필요한 필드가 포함되어야 합니다."
+
+def main_content() -> None:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stDataFrame"] table { width: 100%; }
+        [data-testid="stDataFrame"] th,
+        [data-testid="stDataFrame"] td { text-align: center !important; vertical-align: middle !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    st.stop()
+    st_autorefresh(interval=60000, key="naver_modiba_dashboard_autorefresh")
 
-today = pd.Timestamp.now().normalize()
+    header_left, header_right = st.columns([5, 1])
+    with header_left:
+        st.title("네이버 커머스 주문 분석 대시보드")
+    with header_right:
+        st.markdown("")  # vertical align with title
+        if st.button("🔄 새로고침"):
+            st.rerun()
 
-tab_live, tab_date = st.tabs(["📊 오늘 실시간", "📅 일자별 조회"])
-
-with tab_live:
-    data: dict[str, int] = {"order_count": 0, "total_sales": 0}
-    try:
-        data = get_today_summary(date.today())
-    except Exception:
-        pass
-    order_count = int(data.get("order_count") or 0)
-    total_sales = int(data.get("total_sales") or 0)
-
-    m1, m2 = st.columns(2)
-    m1.metric("주문 수", f"{order_count:,}")
-    m2.metric("매출", f"{total_sales:,}원")
-
-    df_today = pd.DataFrame(
-        [{"order_count": order_count, "total_sales": total_sales}]
-    )
-    show_data_grid(df_today)
-
-    # 1) KPI 대시보드
-    st.subheader("1) KPI 대시보드")
-    today_mask = order_df["date"].dt.normalize() == today
-    today_sales = float(order_df.loc[today_mask, "amount"].sum())
-    today_real_quantity = float(order_df.loc[today_mask, "real_quantity"].sum())
-    total_customers = int(order_df["buyer_id"].astype(str).nunique())
-    kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("오늘 매출", format_krw(today_sales))
-    kpi2.metric("오늘 실판매수량", f"{today_real_quantity:,.0f}")
-    kpi3.metric("총 고객 수", total_customers)
-
-with tab_date:
-    query_date = st.date_input("조회일", value=date.today(), key="tab_date_query_day")
-    filtered_df = order_df[order_df["date"].dt.date == query_date].copy()
-    if filtered_df.empty:
-        st.info(f"{query_date} 기준 주문 데이터가 없습니다. 다른 날짜를 선택해 주세요.")
+    with st.sidebar:
+        st.header("API 설정")
+        api_base_url = st.text_input("FastAPI 기본 URL", value=DEFAULT_API_BASE_URL).rstrip("/")
 
     try:
-        ds = get_daily_summary(query_date)
-    except Exception:
-        ds = {"total_orders": 0, "total_sales": 0}
-    if ds["total_orders"] == 0 and ds["total_sales"] == 0:
-        st.warning("데이터 없음")
-    df_daily = pd.DataFrame(
-        [
-            {
-                "total_orders": int(ds.get("total_orders") or 0),
-                "total_sales": int(ds.get("total_sales") or 0),
-            }
-        ]
-    )
-    show_summary_table(df_daily)
+        raw_df = fetch_order_data(api_base_url)
+        order_df = normalize_order_data(raw_df)
+    except Exception as exc:
+        st.error(f"주문 데이터 조회 실패: {exc}")
+        st.stop()
 
-    # 2) 일별 매출 추이 (선택일 기준)
-    st.subheader("2) 일별 매출 추이")
-    daily_sales = (
-        filtered_df.groupby(filtered_df["date"].dt.date, as_index=False)
-        .agg(
-            total_amount=("amount", "sum"),
-            total_quantity=("real_quantity", "sum"),
+    if order_df.empty:
+        st.warning(
+            "API 응답에 상세 주문 데이터가 없습니다. "
+            "`/analytics/orders-by-date` 응답 구조에 필요한 필드가 포함되어야 합니다."
         )
-        .rename(columns={"date": "date"})
-        .sort_values("date")
+        st.stop()
+
+    with st.sidebar:
+        st.header("조회 필터")
+        today_date = date.today()
+        start_date = st.date_input("시작일", value=today_date, key="main_start_date")
+        end_date = st.date_input("종료일", value=today_date, key="main_end_date")
+        buyer_name_search = st.text_input("구매자명 검색", "", key="main_buyer_search")
+
+    if start_date > end_date:
+        st.error("시작일은 종료일보다 클 수 없습니다.")
+        st.stop()
+
+    period_mask = (
+        (order_df["date"].dt.date >= start_date)
+        & (order_df["date"].dt.date <= end_date)
     )
-    daily_sales["ma7"] = daily_sales["total_amount"].rolling(window=7, min_periods=1).mean()
-
-    table_daily = daily_sales.drop(columns=["ma7"], errors="ignore").copy()
-    show_data_grid(table_daily)
-
-    chart_daily = daily_sales.copy()
-    chart_daily["date"] = pd.to_datetime(chart_daily["date"])
-    if not chart_daily.empty:
-        st.line_chart(chart_daily, x="date", y=["total_amount", "ma7"])
-
-    # 3) 상품군 매출
-    st.subheader("3) 상품군 매출")
-    group_df = filtered_df.copy()
-    group_df["product_group"] = group_df["product_name"].apply(product_group)
-    group_summary = (
-        group_df.groupby("product_group", as_index=False)
-        .agg(
-            total_quantity=("real_quantity", "sum"),
-            total_amount=("amount", "sum"),
-        )
-        .sort_values("total_amount", ascending=False)
-    )
-    show_data_grid(group_summary)
-    if not group_summary.empty:
-        st.bar_chart(group_summary, x="product_group", y="total_amount")
-
-    # 4) 상품별 매출
-    st.subheader("4) 상품별 매출")
-    product_summary = (
-        filtered_df.groupby("product_name", as_index=False)
-        .agg(
-            total_quantity=("real_quantity", "sum"),
-            total_amount=("amount", "sum"),
-        )
-        .sort_values("total_amount", ascending=False)
-    )
-    show_data_grid(product_summary)
-    if not product_summary.empty:
-        st.bar_chart(product_summary.head(10), x="product_name", y="total_amount")
-
-    # 5) 옵션별 매출
-    st.subheader("5) 옵션별 매출")
-    option_summary = (
-        filtered_df.groupby("option_name", as_index=False)
-        .agg(
-            order_count=("quantity", "sum"),
-            real_quantity=("real_quantity", "sum"),
-            total_amount=("amount", "sum"),
-        )
-        .sort_values("total_amount", ascending=False)
-    )
-    show_data_grid(option_summary)
-    if not option_summary.empty:
-        st.bar_chart(option_summary.head(10), x="option_name", y="total_amount")
-
-    # 6) 옵션 일자 상세
-    st.subheader("6) 옵션 일자 상세")
-    option_daily = (
-        filtered_df.groupby([filtered_df["date"].dt.date, "option_name"], as_index=False)
-        .agg(
-            order_count=("quantity", "sum"),
-            real_quantity=("real_quantity", "sum"),
-            total_amount=("amount", "sum"),
-        )
-        .rename(columns={"date": "date"})
-        .sort_values(["date", "total_amount"], ascending=[False, False])
-    )
-    show_data_grid(option_daily)
-
-    # 7) 고객 상세 테이블 (상단 조회일과 동일)
-    st.subheader("7) 고객 상세 테이블")
-    buyer_name_search = st.text_input("구매자명 검색", "", key="tab_date_buyer_search")
-
-    customer_detail = filtered_df.copy()
+    filtered_df = order_df[period_mask].copy()
     if buyer_name_search:
-        customer_detail = customer_detail[
-            customer_detail["buyer_name"].astype(str).str.contains(buyer_name_search, case=False, na=False)
+        filtered_df = filtered_df[
+            filtered_df["buyer_name"].astype(str).str.contains(
+                buyer_name_search, case=False, na=False
+            )
         ]
 
-    show_data_grid(customer_detail)
+    if filtered_df.empty:
+        st.warning("선택한 조건에 맞는 데이터가 없습니다.")
+        st.stop()
+
+    def _delta_rate(current: float, previous: float) -> str:
+        if previous == 0:
+            if current == 0:
+                return "0.0%"
+            return "+100.0%"
+        rate = ((current - previous) / previous) * 100
+        return f"{'+' if rate >= 0 else ''}{rate:.1f}%"
+
+    today = pd.Timestamp.now().normalize().date()
+    yesterday = today - pd.Timedelta(days=1)
+
+    today_df = order_df[order_df["date"].dt.date == today]
+    prev_df = order_df[order_df["date"].dt.date == yesterday]
+
+    today_sales = float(today_df["amount"].sum())
+    prev_sales = float(prev_df["amount"].sum())
+    today_real_quantity = float(today_df["real_quantity"].sum())
+    prev_real_quantity = float(prev_df["real_quantity"].sum())
+    total_customers = int(filtered_df["buyer_id"].astype(str).nunique())
+    prev_customers = int(prev_df["buyer_id"].astype(str).nunique())
+
+    recent_7d = order_df[
+        order_df["date"].dt.date >= (today - pd.Timedelta(days=6))
+    ]
+    recent_qty = float(recent_7d["real_quantity"].sum())
+    avg_unit_price = (
+        float(recent_7d["amount"].sum() / recent_qty)
+        if recent_qty > 0
+        else 0.0
+    )
+    expected_revenue = today_real_quantity * avg_unit_price
+    prev_expected_revenue = prev_real_quantity * avg_unit_price
+
+    st.markdown("### KPI 요약")
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    kpi1.metric("오늘 주문 금액", format_krw(today_sales), _delta_rate(today_sales, prev_sales))
+    kpi2.metric(
+        "오늘 실판매수량",
+        f"{today_real_quantity:,.0f}",
+        _delta_rate(today_real_quantity, prev_real_quantity),
+    )
+    kpi3.metric(
+        "총 고객수",
+        f"{total_customers:,}",
+        _delta_rate(float(total_customers), float(prev_customers)),
+    )
+    kpi4.metric(
+        "실제예상매출액",
+        format_krw(expected_revenue),
+        _delta_rate(expected_revenue, prev_expected_revenue),
+    )
+
+    st.markdown("")
+    with st.container(border=True):
+        st.subheader("시간단위 주문 금액 추이")
+        hourly_df = filtered_df.copy()
+        hourly_df["hour_of_day"] = (
+            hourly_df["payment_date"].dt.hour.fillna(-1).astype(int)
+        )
+        hourly_amount = (
+            hourly_df[hourly_df["hour_of_day"] >= 0]
+            .groupby("hour_of_day", as_index=False)
+            .agg(total_amount=("amount", "sum"))
+            .sort_values("hour_of_day")
+        )
+        if hourly_amount.empty:
+            st.info("시간단위 차트 데이터가 없습니다.")
+        else:
+            st.bar_chart(hourly_amount, x="hour_of_day", y="total_amount")
+
+    st.markdown("")
+    st.subheader("상세 분석")
+    tab_product, tab_option, tab_option_daily = st.tabs(
+        ["기존칼럼유지 - 상품 분석", "기존칼럼유지 - 옵션 분석", "기존칼럼유지 - 옵션 일자"]
+    )
+
+    with tab_product:
+        product_summary = (
+            filtered_df.groupby("product_name", as_index=False)
+            .agg(
+                total_quantity=("real_quantity", "sum"),
+                total_amount=("amount", "sum"),
+            )
+            .sort_values("total_amount", ascending=False)
+        )
+        show_data_grid(product_summary)
+
+    with tab_option:
+        option_summary = (
+            filtered_df.groupby("option_name", as_index=False)
+            .agg(
+                order_count=("quantity", "sum"),
+                real_quantity=("real_quantity", "sum"),
+                total_amount=("amount", "sum"),
+            )
+            .sort_values("total_amount", ascending=False)
+        )
+        show_data_grid(option_summary)
+
+    with tab_option_daily:
+        option_daily = (
+            filtered_df.groupby(
+                [filtered_df["date"].dt.date, "option_name"], as_index=False
+            )
+            .agg(
+                order_count=("quantity", "sum"),
+                real_quantity=("real_quantity", "sum"),
+                total_amount=("amount", "sum"),
+            )
+            .rename(columns={"date": "date"})
+            .sort_values(["date", "total_amount"], ascending=[False, False])
+        )
+        show_data_grid(option_daily)
+
+    st.markdown("")
+    st.subheader("원본 주문 데이터")
+    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+
+
+if _require_login():
+    main_content()
