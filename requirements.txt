@@ -12,4 +12,5 @@ pytest-cov
 flake8
 black
 streamlit
+streamlit-autorefresh
 pandas

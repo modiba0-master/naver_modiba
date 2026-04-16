@@ -119,10 +119,10 @@ daily_sales = (
 )
 daily_sales["ma7"] = daily_sales["total_amount"].rolling(window=7, min_periods=1).mean()
 
-table_daily = daily_sales.copy()
+table_daily = daily_sales.drop(columns=["ma7"], errors="ignore").copy()
 table_daily["total_amount"] = table_daily["total_amount"].apply(format_krw)
 table_daily["total_quantity"] = table_daily["total_quantity"].apply(lambda x: f"{x:,.0f}")
-st.dataframe(table_daily[["date", "total_amount", "total_quantity"]], width="stretch")
+st.dataframe(table_daily, width="stretch")
 
 chart_daily = daily_sales.copy()
 chart_daily["date"] = pd.to_datetime(chart_daily["date"])
@@ -218,20 +218,7 @@ if selected_date:
         customer_detail["date"].dt.date == selected_date
     ]
 
-detail_cols = [
-    "date",
-    "payment_date",
-    "buyer_name",
-    "buyer_id",
-    "receiver_name",
-    "short_address",
-    "product_name",
-    "option_name",
-    "quantity",
-    "real_quantity",
-    "amount",
-]
-detail_table = customer_detail[detail_cols].copy()
+detail_table = customer_detail.copy()
 detail_table["date"] = detail_table["date"].dt.strftime("%Y-%m-%d")
 detail_table["payment_date"] = detail_table["payment_date"].dt.strftime("%Y-%m-%d %H:%M:%S")
 detail_table["quantity"] = detail_table["quantity"].apply(lambda x: f"{x:,.0f}")

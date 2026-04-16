@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 from services.db import get_engine
 from services.queries import (
@@ -157,7 +158,7 @@ def render_option_analysis(start_date: date | None, end_date: date | None) -> No
                 "cancel_rate_pct": "취소율(%)",
             }
         )
-        st.dataframe(risky[["옵션명", "주문수", "취소건수", "취소율(%)"]], use_container_width=True, hide_index=True)
+        st.dataframe(risky, use_container_width=True, hide_index=True)
 
 
 def render_time_analysis(start_date: date | None, end_date: date | None) -> None:
@@ -197,6 +198,8 @@ def render_time_analysis(start_date: date | None, end_date: date | None) -> None
 
 def main() -> None:
     st.set_page_config(page_title="이커머스 분석 대시보드", layout="wide")
+    # 백엔드 주문 동기화(10분)와 맞춰 데이터 갱신
+    st_autorefresh(interval=10 * 60 * 1000, key="naver_modiba_autorefresh")
     st.title("이커머스 분석 대시보드")
 
     with st.sidebar:
