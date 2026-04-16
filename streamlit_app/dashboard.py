@@ -15,8 +15,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from column_map import COLUMN_MAP
-
+from services.data_grid import show_data_grid, show_summary_table
 from services.db import SessionLocal
 
 DEFAULT_API_BASE_URL = "https://navermodiba-production.up.railway.app"
@@ -32,42 +31,6 @@ REQUIRED_COLUMNS = [
     "quantity",
     "amount",
 ]
-
-
-def _comma_format_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """숫자 dtype 컬럼만 천 단위 콤마 문자열로 변환."""
-    out = df.copy()
-    for c in out.columns:
-        if pd.api.types.is_numeric_dtype(out[c]):
-            out[c] = out[c].map(
-                lambda x: f"{int(x):,}"
-                if pd.notna(x) and not isinstance(x, bool)
-                else ""
-            )
-    return out
-
-
-def _ensure_dataframe(data: pd.DataFrame | list | dict) -> pd.DataFrame:
-    """st.dataframe 직전에 항상 DataFrame으로 통일."""
-    if isinstance(data, pd.DataFrame):
-        return data
-    return pd.DataFrame(data)
-
-
-def show_summary_table(data: pd.DataFrame | list | dict) -> None:
-    """소형 요약(orders/daily_summary 등): st.dataframe으로 표시."""
-    show_data_grid(data)
-
-
-def show_data_grid(data: pd.DataFrame | list | dict) -> None:
-    """일반 표: 숫자 콤마 포맷 후 st.dataframe(df, use_container_width=True, hide_index=True)."""
-    df = _ensure_dataframe(data)
-    df = df.rename(columns=COLUMN_MAP)
-    df = df[
-        [col for col in dict.fromkeys(COLUMN_MAP.values()) if col in df.columns]
-    ]
-    df = _comma_format_numeric_columns(df)
-    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def format_krw(value: float | int) -> str:
@@ -103,6 +66,35 @@ def fetch_order_data(base_url: str) -> pd.DataFrame:
     payload = response.json()
     items = payload.get("items", [])
     return pd.DataFrame(items)
+
+
+def _normalize_api_column_name(name: object) -> str:
+    """API 응답 컬럼명을 내부 표준 snake_case로 정규화."""
+    text = str(name).strip()
+    text = re.sub(r"(?<!^)(?=[A-Z])", "_", text)
+    text = text.replace("-", "_").replace(" ", "_")
+    text = re.sub(r"_+", "_", text).strip("_").lower()
+    return text
+
+
+def _normalize_api_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """네이버/백엔드 응답 컬럼 alias를 내부 분석 컬럼으로 통일."""
+    df = frame.copy()
+    df.columns = [_normalize_api_column_name(col) for col in df.columns]
+
+    alias_map = {
+        "orderer_name": "buyer_name",
+        "orderer_id": "buyer_id",
+        "shipping_address": "address",
+        "receiver_address": "address",
+    }
+    for src, dst in alias_map.items():
+        if src in df.columns and dst not in df.columns:
+            df = df.rename(columns={src: dst})
+
+    if "date" not in df.columns and "business_date" in df.columns:
+        df = df.rename(columns={"business_date": "date"})
+    return df
 
 
 @st.cache_data(ttl=60)
@@ -162,7 +154,8 @@ def get_daily_summary(selected_date: date) -> dict[str, int]:
 
 
 def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
-    df = frame.copy()
+    # 로드 직후 컬럼명을 통일해 이후 집계/표시에 동일 스키마를 사용한다.
+    df = _normalize_api_columns(frame)
     for col in REQUIRED_COLUMNS:
         if col not in df.columns:
             df[col] = ""
@@ -286,11 +279,7 @@ with tab_date:
     daily_sales["ma7"] = daily_sales["total_amount"].rolling(window=7, min_periods=1).mean()
 
     table_daily = daily_sales.drop(columns=["ma7"], errors="ignore").copy()
-    table_daily["total_amount"] = table_daily["total_amount"].apply(format_krw)
-    table_daily["total_quantity"] = table_daily["total_quantity"].apply(lambda x: f"{x:,.0f}")
-    df = table_daily.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    show_data_grid(df)
+    show_data_grid(table_daily)
 
     chart_daily = daily_sales.copy()
     chart_daily["date"] = pd.to_datetime(chart_daily["date"])
@@ -309,11 +298,7 @@ with tab_date:
         )
         .sort_values("total_amount", ascending=False)
     )
-    group_table = group_summary.copy()
-    group_table["total_quantity"] = group_table["total_quantity"].apply(lambda x: f"{x:,.0f}")
-    group_table["total_amount"] = group_table["total_amount"].apply(format_krw)
-    df = group_table.copy()
-    show_data_grid(df)
+    show_data_grid(group_summary)
     if not group_summary.empty:
         st.bar_chart(group_summary, x="product_group", y="total_amount")
 
@@ -327,11 +312,7 @@ with tab_date:
         )
         .sort_values("total_amount", ascending=False)
     )
-    product_table = product_summary.copy()
-    product_table["total_quantity"] = product_table["total_quantity"].apply(lambda x: f"{x:,.0f}")
-    product_table["total_amount"] = product_table["total_amount"].apply(format_krw)
-    df = product_table.copy()
-    show_data_grid(df)
+    show_data_grid(product_summary)
     if not product_summary.empty:
         st.bar_chart(product_summary.head(10), x="product_name", y="total_amount")
 
@@ -346,12 +327,7 @@ with tab_date:
         )
         .sort_values("total_amount", ascending=False)
     )
-    option_table = option_summary.copy()
-    option_table["order_count"] = option_table["order_count"].apply(lambda x: f"{x:,.0f}")
-    option_table["real_quantity"] = option_table["real_quantity"].apply(lambda x: f"{x:,.0f}")
-    option_table["total_amount"] = option_table["total_amount"].apply(format_krw)
-    df = option_table.copy()
-    show_data_grid(df)
+    show_data_grid(option_summary)
     if not option_summary.empty:
         st.bar_chart(option_summary.head(10), x="option_name", y="total_amount")
 
@@ -367,14 +343,7 @@ with tab_date:
         .rename(columns={"date": "date"})
         .sort_values(["date", "total_amount"], ascending=[False, False])
     )
-    option_daily_table = option_daily.copy()
-    option_daily_table["order_count"] = option_daily_table["order_count"].apply(lambda x: f"{x:,.0f}")
-    option_daily_table["real_quantity"] = option_daily_table["real_quantity"].apply(
-        lambda x: f"{x:,.0f}"
-    )
-    option_daily_table["total_amount"] = option_daily_table["total_amount"].apply(format_krw)
-    df = option_daily_table.copy()
-    show_data_grid(df)
+    show_data_grid(option_daily)
 
     # 7) 고객 상세 테이블 (상단 조회일과 동일)
     st.subheader("7) 고객 상세 테이블")
@@ -386,11 +355,4 @@ with tab_date:
             customer_detail["buyer_name"].astype(str).str.contains(buyer_name_search, case=False, na=False)
         ]
 
-    detail_table = customer_detail.copy()
-    detail_table["date"] = detail_table["date"].dt.strftime("%Y-%m-%d")
-    detail_table["payment_date"] = detail_table["payment_date"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    detail_table["quantity"] = detail_table["quantity"].apply(lambda x: f"{x:,.0f}")
-    detail_table["real_quantity"] = detail_table["real_quantity"].apply(lambda x: f"{x:,.0f}")
-    detail_table["amount"] = detail_table["amount"].apply(format_krw)
-    df = detail_table.copy()
-    show_data_grid(df)
+    show_data_grid(customer_detail)

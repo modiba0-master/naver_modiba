@@ -2,5 +2,6 @@ streamlit
 streamlit-autorefresh
 pandas
 plotly
+httpx
 sqlalchemy
 pymysql

@@ -56,3 +56,25 @@
 4. Validate dashboard pages:
    - Main/Product/Option/Time sections
    - status filter and business-day behavior in displayed metrics
+
+## 2026-04-16 Session Summary
+
+- Unified table rendering to `streamlit_app/services/data_grid.py` so `st.dataframe` is centralized.
+- Restricted header localization to UI-only (display copy) and kept API/DB schema keys unchanged.
+- Added API response column normalization in dashboards:
+  - `camelCase`/`kebab-case` -> `snake_case`
+  - alias mapping (`orderer_name`->`buyer_name`, `shipping_address`->`address`, etc.)
+  - fallback `business_date` -> `date` when needed
+- Updated Korean display labels and ordering for requested table headers:
+  - `date` -> `날자`
+  - `option_name` -> `옵션상품명`
+  - `order_count` -> `주문수량`
+  - `real_quantity` -> `수량집계`
+  - `total_amount` -> `주문금액`
+- Aligned local Streamlit entrypoint with web dashboard behavior by routing `streamlit_app/app.py` to run `dashboard.py`.
+- Fixed Railway dashboard runtime errors:
+  - added `httpx` to `streamlit_app/requirements.txt`
+  - added `streamlit_app/column_map.py` so dashboard deployment can import column map in `/streamlit_app` root deployment mode.
+- Railway checks:
+  - confirmed outbound IP for web service: `182.208.212.186`
+  - redeployed dashboard service successfully (`SUCCESS`) after dependency/import fixes.

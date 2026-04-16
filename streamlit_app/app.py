@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+import runpy
+
+_RUN_WEB_DASHBOARD = __name__ == "__main__"
+if _RUN_WEB_DASHBOARD:
+    runpy.run_path(str(Path(__file__).with_name("dashboard.py")), run_name="__main__")
+
 from datetime import date, timedelta
 
 import pandas as pd
@@ -7,6 +14,7 @@ import plotly.express as px
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
+from services.data_grid import show_data_grid
 from services.db import get_engine
 from services.queries import (
     get_main_kpis,
@@ -80,9 +88,7 @@ def render_main_dashboard(today: date) -> None:
     if top_df.empty:
         st.info("오늘 기준 상품 데이터가 없습니다.")
     else:
-        top_df = top_df.rename(columns={"product_name": "상품명", "revenue": "매출"})
-        top_df["매출"] = top_df["매출"].apply(format_krw)
-        st.dataframe(top_df, use_container_width=True, hide_index=True)
+        show_data_grid(top_df)
 
 
 def render_product_analysis(start_date: date | None, end_date: date | None) -> None:
@@ -150,15 +156,10 @@ def render_option_analysis(start_date: date | None, end_date: date | None) -> No
     if risky.empty:
         st.success("위험 옵션이 없습니다.")
     else:
-        risky = risky.rename(
-            columns={
-                "option_name": "옵션명",
-                "orders": "주문수",
-                "cancel_count": "취소건수",
-                "cancel_rate_pct": "취소율(%)",
-            }
+        risky["cancel_rate_pct"] = risky["cancel_rate_pct"].map(
+            lambda x: f"{x:,.2f}" if pd.notna(x) else ""
         )
-        st.dataframe(risky, use_container_width=True, hide_index=True)
+        show_data_grid(risky[["option_name", "orders", "cancel_count", "cancel_rate_pct"]])
 
 
 def render_time_analysis(start_date: date | None, end_date: date | None) -> None:
@@ -231,6 +232,6 @@ def main() -> None:
         render_time_analysis(start_date, end_date)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not _RUN_WEB_DASHBOARD:
     main()
 

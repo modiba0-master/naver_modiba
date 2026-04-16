@@ -1,9 +1,8 @@
 """
-Streamlit 표(st.dataframe)에 쓸 **표시용** 영문 → 한글 헤더 매핑.
+Streamlit 표(st.dataframe)에 쓸 표시용 영문 -> 한글 헤더 매핑.
 
-- 네이버 API 동기화, FastAPI `/analytics/*` JSON, DB 컬럼명은 **영문 스키마 그대로** 유지한다.
-- 이 모듈은 `streamlit_app/services/data_grid.py` 등 **UI 그리드 직전**에서만 사용한다.
-- FastAPI `app` 라우터·서비스·동기화 코드에서는 import하지 않는다.
+- 네이버 API 동기화, FastAPI `/analytics/*` JSON, DB 컬럼명은 영문 스키마 그대로 유지한다.
+- 이 모듈은 `services/data_grid.py` 등 UI 그리드 직전에서만 사용한다.
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ COLUMN_MAP: dict[str, str] = {
     "real_quantity": "수량집계",
     "quantity": "수량",
     "amount": "금액",
-    # 분석·레거시 대시보드용
     "revenue": "매출",
     "orders": "주문 수",
     "cancel_count": "취소건수",
@@ -44,7 +42,6 @@ COLUMN_MAP: dict[str, str] = {
     "weekday": "요일",
 }
 
-# 한글 헤더 기준 표시 순서(앞에서부터 배치). 여기 없는 컬럼(미매핑 영문 등)은 기존 순서로 뒤에 둔다.
 COLUMN_DISPLAY_ORDER: list[str] = [
     "날자",
     "결제일시",

@@ -5,6 +5,8 @@ import httpx
 import pandas as pd
 import streamlit as st
 
+from streamlit_app.services.data_grid import show_data_grid
+
 DEFAULT_API_BASE_URL = "https://navermodiba-production.up.railway.app"
 REQUIRED_COLUMNS = [
     "date",
@@ -55,8 +57,35 @@ def fetch_order_data(base_url: str) -> pd.DataFrame:
     return pd.DataFrame(items)
 
 
-def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
+def _normalize_api_column_name(name: object) -> str:
+    """API 응답 컬럼명을 내부 표준 snake_case로 정규화."""
+    text = str(name).strip()
+    text = re.sub(r"(?<!^)(?=[A-Z])", "_", text)
+    text = text.replace("-", "_").replace(" ", "_")
+    text = re.sub(r"_+", "_", text).strip("_").lower()
+    return text
+
+
+def _normalize_api_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """네이버/백엔드 응답 컬럼 alias를 내부 분석 컬럼으로 통일."""
     df = frame.copy()
+    df.columns = [_normalize_api_column_name(col) for col in df.columns]
+    alias_map = {
+        "orderer_name": "buyer_name",
+        "orderer_id": "buyer_id",
+        "shipping_address": "address",
+        "receiver_address": "address",
+    }
+    for src, dst in alias_map.items():
+        if src in df.columns and dst not in df.columns:
+            df = df.rename(columns={src: dst})
+    if "date" not in df.columns and "business_date" in df.columns:
+        df = df.rename(columns={"business_date": "date"})
+    return df
+
+
+def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
+    df = _normalize_api_columns(frame)
     for col in REQUIRED_COLUMNS:
         if col not in df.columns:
             df[col] = ""
@@ -120,9 +149,7 @@ daily_sales = (
 daily_sales["ma7"] = daily_sales["total_amount"].rolling(window=7, min_periods=1).mean()
 
 table_daily = daily_sales.drop(columns=["ma7"], errors="ignore").copy()
-table_daily["total_amount"] = table_daily["total_amount"].apply(format_krw)
-table_daily["total_quantity"] = table_daily["total_quantity"].apply(lambda x: f"{x:,.0f}")
-st.dataframe(table_daily, width="stretch")
+show_data_grid(table_daily)
 
 chart_daily = daily_sales.copy()
 chart_daily["date"] = pd.to_datetime(chart_daily["date"])
@@ -140,10 +167,7 @@ group_summary = (
     )
     .sort_values("total_amount", ascending=False)
 )
-group_table = group_summary.copy()
-group_table["total_quantity"] = group_table["total_quantity"].apply(lambda x: f"{x:,.0f}")
-group_table["total_amount"] = group_table["total_amount"].apply(format_krw)
-st.dataframe(group_table, width="stretch")
+show_data_grid(group_summary)
 st.bar_chart(group_summary, x="product_group", y="total_amount")
 
 # 4) 상품별 매출
@@ -156,10 +180,7 @@ product_summary = (
     )
     .sort_values("total_amount", ascending=False)
 )
-product_table = product_summary.copy()
-product_table["total_quantity"] = product_table["total_quantity"].apply(lambda x: f"{x:,.0f}")
-product_table["total_amount"] = product_table["total_amount"].apply(format_krw)
-st.dataframe(product_table, width="stretch")
+show_data_grid(product_summary)
 st.bar_chart(product_summary.head(10), x="product_name", y="total_amount")
 
 # 5) 옵션별 매출
@@ -173,11 +194,7 @@ option_summary = (
     )
     .sort_values("total_amount", ascending=False)
 )
-option_table = option_summary.copy()
-option_table["order_count"] = option_table["order_count"].apply(lambda x: f"{x:,.0f}")
-option_table["real_quantity"] = option_table["real_quantity"].apply(lambda x: f"{x:,.0f}")
-option_table["total_amount"] = option_table["total_amount"].apply(format_krw)
-st.dataframe(option_table, width="stretch")
+show_data_grid(option_summary)
 st.bar_chart(option_summary.head(10), x="option_name", y="total_amount")
 
 # 6) 옵션 일자 상세
@@ -192,13 +209,7 @@ option_daily = (
     .rename(columns={"date": "date"})
     .sort_values(["date", "total_amount"], ascending=[False, False])
 )
-option_daily_table = option_daily.copy()
-option_daily_table["order_count"] = option_daily_table["order_count"].apply(lambda x: f"{x:,.0f}")
-option_daily_table["real_quantity"] = option_daily_table["real_quantity"].apply(
-    lambda x: f"{x:,.0f}"
-)
-option_daily_table["total_amount"] = option_daily_table["total_amount"].apply(format_krw)
-st.dataframe(option_daily_table, width="stretch")
+show_data_grid(option_daily)
 
 # 7) 고객 상세 테이블
 st.subheader("7) 고객 상세 테이블")
@@ -218,10 +229,4 @@ if selected_date:
         customer_detail["date"].dt.date == selected_date
     ]
 
-detail_table = customer_detail.copy()
-detail_table["date"] = detail_table["date"].dt.strftime("%Y-%m-%d")
-detail_table["payment_date"] = detail_table["payment_date"].dt.strftime("%Y-%m-%d %H:%M:%S")
-detail_table["quantity"] = detail_table["quantity"].apply(lambda x: f"{x:,.0f}")
-detail_table["real_quantity"] = detail_table["real_quantity"].apply(lambda x: f"{x:,.0f}")
-detail_table["amount"] = detail_table["amount"].apply(format_krw)
-st.dataframe(detail_table, width="stretch")
+show_data_grid(customer_detail)
