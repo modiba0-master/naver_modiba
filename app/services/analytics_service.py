@@ -67,6 +67,7 @@ def get_orders_raw(
 
         items.append(
             OrderRawItem(
+                order_id=row.order_id,
                 date=business_date,
                 business_date=business_date,
                 payment_date=row.payment_date,

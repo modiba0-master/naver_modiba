@@ -49,6 +49,34 @@ def _order_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df[primary + rest]
 
 
+def _move_total_rows_to_bottom(df: pd.DataFrame) -> pd.DataFrame:
+    """'합계' 행이 있으면 항상 표 하단으로 이동."""
+    if df.empty:
+        return df
+    total_mask = df.apply(
+        lambda row: any(str(v).strip() == "합계" for v in row), axis=1
+    )
+    if not total_mask.any():
+        return df
+    body = df.loc[~total_mask]
+    total = df.loc[total_mask]
+    return pd.concat([body, total], ignore_index=True)
+
+
+def _style_total_rows(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """'합계' 행 강조(굵게/배경색)."""
+    total_mask = df.apply(
+        lambda row: any(str(v).strip() == "합계" for v in row), axis=1
+    )
+
+    def _row_style(row: pd.Series) -> list[str]:
+        if bool(total_mask.loc[row.name]):
+            return ["font-weight: 700; background-color: #F4F6FA;" for _ in row]
+        return ["" for _ in row]
+
+    return df.style.apply(_row_style, axis=1)
+
+
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
 
@@ -75,8 +103,17 @@ def show_data_grid(data: pd.DataFrame | list | dict) -> None:
     df_src = _ensure_dataframe(data)
     # 원본(동일 객체) 컬럼은 절대 덮어쓰지 않음 — 항상 사본에만 표시명 반영
     df = df_src.copy()
+    # 컬럼 rename은 show_data_grid 내부에서만 수행한다.
+    df.rename(columns=COLUMN_MAP, inplace=True)
+    # 매핑 키와 입력 컬럼 케이스가 다를 때(snake/camel)만 보완 매핑 적용
     df.columns = [_to_display_column_name(col) for col in df.columns]
     # 매핑 테이블에 없는 컬럼은 영문 등 원래 이름 그대로 표시 (열을 버리지 않음)
     df = _order_display_columns(df)
+    df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.data_editor(
+        _style_total_rows(df),
+        use_container_width=True,
+        hide_index=True,
+        disabled=True,
+    )

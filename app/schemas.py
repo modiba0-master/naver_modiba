@@ -34,6 +34,7 @@ class OrdersByDateResponse(BaseModel):
 
 
 class OrderRawItem(BaseModel):
+    order_id: str
     date: date
     business_date: date
     payment_date: datetime
