@@ -86,3 +86,24 @@
   1. 서비스별 도메인 매핑
   2. 각 서비스 배포 아티팩트(루트 vs `streamlit_app`)
   3. 런타임 로그 및 HTTP 15초 fallback 패턴
+
+## 2026-04-17 세션 종료 기록 (대화 연속성용)
+
+### 1) 최종 관측 상태
+- 메인 백엔드 도메인 `https://navermodiba-production.up.railway.app`에서 502(`Application failed to respond`) 재현
+- 대시보드 도메인 `https://navermodibadashboard-production-5e93.up.railway.app/`는 접속 가능
+- 결론적으로 현 시점 장애는 대시보드 렌더링보다는 백엔드 서비스 런타임 이슈 가능성이 큼
+
+### 2) 구조 검증 메모
+- 코드 기준으로는 `API 요청 -> 네이버 직접 호출` 경로를 제거하고 DB 조회 중심 구조를 유지
+- 대시보드 새로고침 시 네이버 API 재호출이 아니라 백엔드 DB 조회 API에 의존
+
+### 3) 미해결 블로커
+- Railway CLI 세션 만료로 로그 조회가 차단됨(`Unauthorized`, non-interactive login 제한)
+- 다음 세션 시작 시 사용자 터미널에서 `railway login` 선행 필요
+
+### 4) 다음 세션 즉시 실행 순서
+1. `railway login`
+2. `railway logs --service naver_modiba`로 부팅 실패 원인 확인
+3. 서비스 설정/환경변수/배포 아티팩트 점검 후 재배포
+4. `/health`, `/analytics/orders-raw` 정상 응답 확인

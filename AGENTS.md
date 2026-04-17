@@ -40,3 +40,16 @@
   - Railway 서비스는 `naver_modiba`(백엔드) / `naver_modiba_dashboard`(대시보드) 분리 운영
   - 메인 API 도메인은 `https://navermodiba-production.up.railway.app`를 기준으로 사용
   - fallback 502 재발 시 서비스-도메인 매핑과 런타임 로그를 먼저 확인
+
+## 세션 마무리 메모 (2026-04-17, Request ID: VfSdsATdSJ22qr2aacI7Nw)
+- 상태 확인 결과:
+  - `https://navermodiba-production.up.railway.app/health`는 502 응답 확인
+  - `https://navermodibadashboard-production-5e93.up.railway.app/`는 200 응답 확인
+- 해석:
+  - 대시보드 앱 자체보다는 백엔드 메인 도메인/서비스(`naver_modiba`) 쪽 장애 가능성이 높음
+  - 현재 구조상 대시보드 새로고침/데이터 조회는 네이버 API 직접 호출이 아니라 DB 조회 API 경로를 사용
+- 즉시 이어서 할 일:
+  1. 로컬/작업 터미널에서 `railway login` 재인증
+  2. `naver_modiba` 최신 배포 로그 확인(크래시/포트 바인딩/환경변수 누락 여부)
+  3. 필요 시 `naver_modiba` 재배포/재시작
+  4. `GET /health`, `GET /analytics/orders-raw` 200 복구 확인
