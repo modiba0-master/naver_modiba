@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
 
     scheduler = None
-    if settings.enable_worker:
+    if settings.enable_worker and settings.run_sync_scheduler_in_api:
         scheduler = AsyncIOScheduler(
             job_defaults={
                 "coalesce": True,
@@ -68,6 +68,12 @@ async def lifespan(app: FastAPI):
         logger.info(
             "APScheduler started: sync->summary every %s seconds",
             settings.order_poll_interval_seconds,
+        )
+    else:
+        logger.info(
+            "APScheduler disabled in API process (enable_worker=%s, run_sync_scheduler_in_api=%s)",
+            settings.enable_worker,
+            settings.run_sync_scheduler_in_api,
         )
     try:
         yield

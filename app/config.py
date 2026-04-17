@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     ntfy_topic: str = "naver-commerce-orders"
     order_poll_interval_seconds: int = 60
     enable_worker: bool = True
+    run_sync_scheduler_in_api: bool = Field(
+        default=False, alias="RUN_SYNC_SCHEDULER_IN_API"
+    )
     naver_commerce_api_client_id: str | None = None
     naver_commerce_api_client_secret: str | None = None
     naver_client_id: str | None = Field(default=None, alias="NAVER_CLIENT_ID")

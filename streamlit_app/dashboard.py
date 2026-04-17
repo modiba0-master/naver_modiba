@@ -76,8 +76,9 @@ def product_group(product_name: str) -> str:
 
 @st.cache_data(ttl=60)
 def fetch_order_data(base_url: str) -> pd.DataFrame:
+    url = base_url.rstrip("/")
     response = httpx.get(
-        f"{base_url}/analytics/orders-raw",
+        f"{url}/analytics/orders-raw",
         timeout=30,
     )
     response.raise_for_status()
@@ -281,7 +282,7 @@ def main_content() -> None:
         st.stop()
 
     default_end = date.today()
-    default_start = default_end - timedelta(days=30)
+    default_start = default_end
 
     st.markdown("## KPI 영역")
     kpi_col1, kpi_col2 = st.columns(2)
@@ -354,8 +355,13 @@ def main_content() -> None:
     )
 
     st.markdown("")
-    st.subheader("KPI 일자 테이블")
-    kpi_daily_table = kpi_filtered_df.copy()
+    st.subheader("KPI 일자 테이블 (최근 7일)")
+    kpi_daily_start = default_end - timedelta(days=6)
+    kpi_daily_mask = (
+        (order_df["date"].dt.date >= kpi_daily_start)
+        & (order_df["date"].dt.date <= default_end)
+    )
+    kpi_daily_table = order_df[kpi_daily_mask].copy()
     kpi_daily_table["date"] = kpi_daily_table["date"].dt.date
     daily_kpi = (
         kpi_daily_table.groupby("date", as_index=False)
@@ -418,7 +424,8 @@ def main_content() -> None:
             analysis_filtered_df.groupby("product_name", as_index=False)
             .agg(
                 total_amount=("amount", "sum"),
-                total_quantity=("quantity", "sum"),
+                quantity=("quantity", "sum"),
+                real_quantity=("real_quantity", "sum"),
                 order_count=(
                     "order_id",
                     lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
@@ -442,7 +449,8 @@ def main_content() -> None:
                     lambda s: next((x for x in s if str(x).strip()), ""),
                 ),
                 total_amount=("amount", "sum"),
-                total_quantity=("quantity", "sum"),
+                quantity=("quantity", "sum"),
+                real_quantity=("real_quantity", "sum"),
                 converted_quantity=("converted_quantity", "sum"),
                 pack_count_sum=("pack_count", "sum"),
                 order_count=(

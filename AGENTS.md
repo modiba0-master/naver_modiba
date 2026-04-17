@@ -38,4 +38,5 @@
   - 컬럼명 한글화(`weight_unit`, `pack_count`, `pack_count_sum`, `converted_quantity`)
 - 배포 메모:
   - Railway 서비스는 `naver_modiba`(백엔드) / `naver_modiba_dashboard`(대시보드) 분리 운영
+  - 메인 API 도메인은 `https://navermodiba-production.up.railway.app`를 기준으로 사용
   - fallback 502 재발 시 서비스-도메인 매핑과 런타임 로그를 먼저 확인
