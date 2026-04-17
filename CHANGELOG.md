@@ -53,3 +53,36 @@
 4. `POST /analytics/sync-orders` 재검증 → `GET /analytics/orders-raw` 건수·필드 매칭 재검증
 5. 정상화 후 Railway 등 최종 배포 상태 확인
 6. 막힐 때 원인 정리는 [Discussion #2291](https://github.com/commerce-api-naver/commerce-api/discussions/2291) FAQ와 대조
+
+## 2026-04-17 진행 정리 (구조 전환 및 안정화)
+
+### 1) 아키텍처 변경
+- 목표 구조로 전환:
+  - `네이버 API -> DB 저장(배치)`
+  - `Streamlit -> FastAPI DB 조회 API`
+- `POST /analytics/sync-orders` 제거, `/analytics/*`는 조회 전용 유지
+- 스케줄러가 1분 주기로 `sync_orders` + `generate_daily_summary` 실행
+
+### 2) 백엔드 안정화
+- `daily_summary` 테이블 미존재 오류(`NoSuchTableError`) 대응:
+  - `DailySummary` 모델 추가
+  - 집계 서비스에서 테이블 자동 생성 fallback 추가
+- 스케줄러 락을 thread lock으로 개선(요청 루프 블로킹 완화)
+- 수동 부트스트랩 스크립트(`scripts/apply_daily_summary_table.py`)에 `DATABASE_URL` fallback 추가
+
+### 3) 대시보드 기능/UX 반영
+- KPI/분석 필터 완전 분리
+- KPI 계산식 재정의(기간 기준, 이전 기간 비교, 7일 평균 일매출)
+- KPI 일자 테이블 + 합계 행 추가
+- 상품/옵션 매출 탭 분리 및 TOP 매출 비중 표시(상품명/옵션명 기준)
+- 옵션 분석에 `중량단위`, `팩수량`, `환산수량` 표시
+- `show_data_grid` 중심 표 출력 통일, 합계 행 강조
+- 기본 새로고침은 캐시 유지, 강제 새로고침 버튼 분리
+- API 실패 시 직전 성공 데이터 fallback 표시
+
+### 4) 운영 점검 메모
+- 동일 프로젝트 내 백엔드/대시보드 서비스-도메인 매핑이 꼬이면 502 fallback 재발 가능
+- 점검 우선순위:
+  1. 서비스별 도메인 매핑
+  2. 각 서비스 배포 아티팩트(루트 vs `streamlit_app`)
+  3. 런타임 로그 및 HTTP 15초 fallback 패턴
