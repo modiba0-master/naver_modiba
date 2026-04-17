@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Integer, String, func
+from sqlalchemy import Date, DateTime, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -24,3 +24,24 @@ class Order(Base):
     order_date: Mapped[date] = mapped_column(Date, index=True)
     business_date: Mapped[date] = mapped_column(Date, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class DailySummary(Base):
+    __tablename__ = "daily_summary"
+    __table_args__ = (
+        UniqueConstraint("date", "product_id", "option_id", name="uniq_daily"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    product_id: Mapped[str] = mapped_column(String(100), default="", index=True)
+    option_id: Mapped[str] = mapped_column(String(100), default="")
+    orders: Mapped[int] = mapped_column(Integer, default=0)
+    revenue: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_count: Mapped[int] = mapped_column(Integer, default=0)
+    refund_amount: Mapped[int] = mapped_column(Integer, default=0)
+    profit: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

@@ -8,9 +8,11 @@ from typing import Any
 
 from sqlalchemy import MetaData, Table, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine
+from app.models import DailySummary
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +38,14 @@ def _session_scope() -> Iterator[Session]:
 def _load_tables() -> tuple[Table, Table]:
     metadata = MetaData()
     orders = Table("orders", metadata, autoload_with=engine)
-    daily_summary = Table("daily_summary", metadata, autoload_with=engine)
+    try:
+        daily_summary = Table("daily_summary", metadata, autoload_with=engine)
+    except NoSuchTableError:
+        logger.warning("daily_summary table not found. creating table and retrying")
+        DailySummary.__table__.create(bind=engine, checkfirst=True)
+        metadata = MetaData()
+        orders = Table("orders", metadata, autoload_with=engine)
+        daily_summary = Table("daily_summary", metadata, autoload_with=engine)
     return orders, daily_summary
 
 
