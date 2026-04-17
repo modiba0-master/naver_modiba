@@ -1,4 +1,5 @@
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -15,17 +16,14 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-_sync_job_lock = False
+_sync_job_lock = threading.Lock()
 
 
-async def _scheduled_sync_orders_and_summary() -> None:
-    global _sync_job_lock
-
-    if _sync_job_lock:
+def _scheduled_sync_orders_and_summary() -> None:
+    if not _sync_job_lock.acquire(blocking=False):
         logger.warning("Scheduled sync skipped: previous job still running")
         return
 
-    _sync_job_lock = True
     try:
         db = SessionLocal()
         try:
@@ -43,7 +41,7 @@ async def _scheduled_sync_orders_and_summary() -> None:
     except Exception:
         logger.exception("Scheduled sync/summary failed with exception")
     finally:
-        _sync_job_lock = False
+        _sync_job_lock.release()
 
 
 @asynccontextmanager
