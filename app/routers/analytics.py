@@ -1,34 +1,17 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import get_db
 from app.schemas import (
     OrdersByDateResponse,
     OrdersRawResponse,
     RevenueResponse,
-    SyncResponse,
 )
 from app.services.analytics_service import get_orders_by_date, get_orders_raw, get_total_revenue
-from app.services.sync import sync_orders
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
-
-
-@router.post("/sync-orders", response_model=SyncResponse)
-def sync_orders_endpoint(
-    db: Session = Depends(get_db),
-    x_sync_key: str | None = Header(default=None),
-):
-    if settings.sync_api_key and x_sync_key != settings.sync_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized sync request",
-        )
-    inserted_count = sync_orders(db)
-    return SyncResponse(inserted_count=inserted_count)
 
 
 @router.get("/orders-by-date", response_model=OrdersByDateResponse)

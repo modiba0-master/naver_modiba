@@ -1,7 +1,27 @@
-def test_sync_and_analytics_endpoints(client, monkeypatch):
-    sync_response = client.post("/analytics/sync-orders")
-    assert sync_response.status_code == 200
-    assert sync_response.json()["inserted_count"] >= 1
+from datetime import datetime
+
+from app.services.sync import sync_orders
+
+
+def test_analytics_endpoints(client, db_session, monkeypatch):
+    payload = [
+        {
+            "orderId": "MOCK-API-001",
+            "productName": "닭가슴살",
+            "optionName": "1kg 2개",
+            "quantity": 1,
+            "paymentAmount": 20000,
+            "orderStatus": "신규주문",
+            "ordererName": "테스터",
+            "ordererId": "buyer-api-001",
+            "receiverName": "테스터",
+            "shippingAddress": "서울시 강남구",
+            "paymentDate": datetime(2026, 1, 2, 11, 0, 0).isoformat(),
+        }
+    ]
+    monkeypatch.setattr("app.services.sync.fetch_naver_orders", lambda: payload)
+    inserted = sync_orders(db_session)
+    assert inserted == 1
 
     by_date_response = client.get("/analytics/orders-by-date")
     assert by_date_response.status_code == 200

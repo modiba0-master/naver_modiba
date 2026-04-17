@@ -55,7 +55,3 @@ class OrdersRawResponse(BaseModel):
 
 class RevenueResponse(BaseModel):
     total_revenue: Decimal = Field(default=0)
-
-
-class SyncResponse(BaseModel):
-    inserted_count: int

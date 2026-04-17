@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import os
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def product_group(product_name: str) -> str:
 def fetch_order_data(base_url: str) -> pd.DataFrame:
     response = httpx.get(
         f"{base_url}/analytics/orders-raw",
-        timeout=20,
+        timeout=30,
     )
     response.raise_for_status()
     payload = response.json()
@@ -228,9 +229,16 @@ def main_content() -> None:
         st.title("네이버 커머스 주문 분석 대시보드")
     with header_right:
         st.markdown("")  # vertical align with title
+        if "last_click" not in st.session_state:
+            st.session_state.last_click = 0.0
         if st.button("🔄 새로고침"):
-            st.cache_data.clear()
-            st.rerun()
+            now = time.time()
+            if now - st.session_state.last_click < 5:
+                st.warning("5초 후 다시 시도하세요")
+            else:
+                st.session_state.last_click = now
+                st.cache_data.clear()
+                st.rerun()
 
     with st.sidebar:
         st.header("API 설정")
