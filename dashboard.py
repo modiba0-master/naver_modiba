@@ -172,8 +172,12 @@ def main_content() -> None:
             st.warning("5초 후 다시 시도하세요")
         else:
             st.session_state.last_click = now
-            st.cache_data.clear()
             st.rerun()
+    if st.button("실시간 강제 새로고침"):
+        st.warning("강제 새로고침은 캐시를 비우고 API를 재호출합니다. 일시 장애 시 오류가 노출될 수 있습니다.")
+        st.cache_data.clear()
+        st.session_state.pop("last_good_order_df", None)
+        st.rerun()
 
     with st.sidebar:
         st.header("API 설정")
@@ -182,9 +186,15 @@ def main_content() -> None:
     try:
         raw_df = fetch_order_data(api_base_url)
         order_df = normalize_order_data(raw_df)
+        st.session_state["last_good_order_df"] = order_df.copy()
     except Exception as exc:
-        st.error(f"주문 데이터 조회 실패: {exc}")
-        st.stop()
+        cached_df = st.session_state.get("last_good_order_df")
+        if isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
+            st.warning(f"실시간 조회 실패로 직전 데이터로 표시합니다: {exc}")
+            order_df = cached_df.copy()
+        else:
+            st.error(f"주문 데이터 조회 실패: {exc}")
+            st.stop()
 
     if order_df.empty:
         st.warning(
