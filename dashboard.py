@@ -37,12 +37,21 @@ def format_krw(value: float | int) -> str:
 def extract_multiplier(option_name: str) -> int:
     if not isinstance(option_name, str) or not option_name.strip():
         return 1
-    patterns = [r"x\s*(\d+)", r"(\d+)\s*개"]
+    patterns = [r"x\s*(\d+)", r"(\d+)\s*개", r"(\d+)\s*팩"]
     for pattern in patterns:
         match = re.search(pattern, option_name, re.IGNORECASE)
         if match:
             return int(match.group(1))
     return 1
+
+
+def extract_weight_unit(option_name: str) -> str:
+    if not isinstance(option_name, str) or not option_name.strip():
+        return ""
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(kg|g)", option_name, re.IGNORECASE)
+    if not m:
+        return ""
+    return f"{m.group(1)}{m.group(2).lower()}"
 
 
 def product_group(product_name: str) -> str:
@@ -107,6 +116,9 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
     df["multiplier"] = df["option_name"].apply(extract_multiplier)
     df["real_quantity"] = df["quantity"] * df["multiplier"]
+    df["weight_unit"] = df["option_name"].apply(extract_weight_unit)
+    df["pack_count"] = df["multiplier"]
+    df["converted_quantity"] = df["quantity"] * df["pack_count"]
     df["short_address"] = df["address"].astype(str).str.slice(0, 20)
     if "customer_id" not in df.columns:
         df["customer_id"] = df["buyer_id"]
@@ -303,35 +315,57 @@ def main_content() -> None:
         st.warning("선택한 분석 조건에 맞는 데이터가 없습니다.")
         st.stop()
 
-    st.subheader("상품별 매출")
-    product_summary = (
-        analysis_filtered_df.groupby("product_name", as_index=False)
-        .agg(
-            total_amount=("amount", "sum"),
-            total_quantity=("quantity", "sum"),
-            order_count=(
-                "order_id",
-                lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
-            ),
-        )
-        .sort_values("total_amount", ascending=False)
-    )
-    total_amount = float(product_summary["total_amount"].sum())
-    top_sales = float(product_summary.iloc[0]["total_amount"]) if not product_summary.empty else 0.0
-    ratio = (top_sales / total_amount) if total_amount > 0 else 0.0
-    st.metric("TOP 상품 매출 비중", f"{ratio * 100:.1f}%")
-    show_data_grid(product_summary)
+    tab_product_sales, tab_option_sales = st.tabs(["상품별 매출", "옵션별 매출"])
 
-    st.subheader("옵션별 매출")
-    option_summary = (
-        analysis_filtered_df.groupby(["product_name", "option_name"], as_index=False)
-        .agg(
-            total_amount=("amount", "sum"),
-            total_quantity=("quantity", "sum"),
+    with tab_product_sales:
+        st.subheader("상품별 매출")
+        product_summary = (
+            analysis_filtered_df.groupby("product_name", as_index=False)
+            .agg(
+                total_amount=("amount", "sum"),
+                total_quantity=("quantity", "sum"),
+                order_count=(
+                    "order_id",
+                    lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
+                ),
+            )
+            .sort_values("total_amount", ascending=False)
         )
-        .sort_values("total_amount", ascending=False)
-    )
-    show_data_grid(option_summary)
+        total_amount = float(product_summary["total_amount"].sum())
+        top_sales = float(product_summary.iloc[0]["total_amount"]) if not product_summary.empty else 0.0
+        ratio = (top_sales / total_amount) if total_amount > 0 else 0.0
+        st.metric("TOP 상품 매출 비중(상품명 기준)", f"{ratio * 100:.1f}%")
+        show_data_grid(product_summary)
+
+    with tab_option_sales:
+        st.subheader("옵션별 매출")
+        option_name_summary = (
+            analysis_filtered_df.groupby("option_name", as_index=False)
+            .agg(
+                weight_unit=(
+                    "weight_unit",
+                    lambda s: next((x for x in s if str(x).strip()), ""),
+                ),
+                total_amount=("amount", "sum"),
+                total_quantity=("quantity", "sum"),
+                converted_quantity=("converted_quantity", "sum"),
+                pack_count_sum=("pack_count", "sum"),
+                order_count=(
+                    "order_id",
+                    lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
+                ),
+            )
+            .sort_values("total_amount", ascending=False)
+        )
+        total_amount = float(option_name_summary["total_amount"].sum())
+        top_sales = (
+            float(option_name_summary.iloc[0]["total_amount"])
+            if not option_name_summary.empty
+            else 0.0
+        )
+        ratio = (top_sales / total_amount) if total_amount > 0 else 0.0
+        st.metric("TOP 상품 매출 비중(옵션명 기준)", f"{ratio * 100:.1f}%")
+        show_data_grid(option_name_summary)
 
     st.subheader("상세 데이터")
     show_data_grid(analysis_filtered_df)
