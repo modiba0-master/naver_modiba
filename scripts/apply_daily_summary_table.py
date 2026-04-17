@@ -24,7 +24,15 @@ CREATE TABLE IF NOT EXISTS daily_summary (
 
 
 def main() -> None:
-    raw_url = os.getenv("MARIADB_PUBLIC_URL") or os.environ["MARIADB_PRIVATE_URL"]
+    raw_url = (
+        os.getenv("MARIADB_PUBLIC_URL")
+        or os.getenv("MARIADB_PRIVATE_URL")
+        or os.getenv("DATABASE_URL")
+    )
+    if not raw_url:
+        raise RuntimeError(
+            "Database URL not found. Set MARIADB_PUBLIC_URL, MARIADB_PRIVATE_URL, or DATABASE_URL."
+        )
     url = raw_url.replace("mariadb://", "mysql+pymysql://", 1)
     engine = create_engine(url)
 
