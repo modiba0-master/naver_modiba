@@ -7,7 +7,7 @@ from datetime import date
 from typing import Any
 
 from sqlalchemy import MetaData, Table, select
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.orm import Session
 
@@ -135,13 +135,16 @@ def _upsert_daily_summary(
     affected = 0
     for i in range(0, len(rows), upsert_chunk_size):
         chunk = rows[i : i + upsert_chunk_size]
-        stmt = mysql_insert(daily_summary).values(chunk)
-        upsert_stmt = stmt.on_duplicate_key_update(
-            orders=stmt.inserted.orders,
-            revenue=stmt.inserted.revenue,
-            cancel_count=stmt.inserted.cancel_count,
-            refund_amount=stmt.inserted.refund_amount,
-            profit=stmt.inserted.profit,
+        stmt = sqlite_insert(daily_summary).values(chunk)
+        upsert_stmt = stmt.on_conflict_do_update(
+            index_elements=["date", "product_id", "option_id"],
+            set_={
+                "orders": stmt.excluded.orders,
+                "revenue": stmt.excluded.revenue,
+                "cancel_count": stmt.excluded.cancel_count,
+                "refund_amount": stmt.excluded.refund_amount,
+                "profit": stmt.excluded.profit,
+            },
         )
         result = session.execute(upsert_stmt)
         affected += int(result.rowcount or 0)

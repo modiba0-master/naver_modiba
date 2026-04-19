@@ -260,7 +260,7 @@ def _get_access_token(client: httpx.Client) -> str:
 def fetch_naver_orders() -> list[dict]:
     """Railway 고정 Outbound IP 환경에서 네이버 API를 직접 호출한다."""
     base_url = settings.naver_commerce_api_base_url.rstrip("/")
-    lookback_hours = min(max(settings.naver_commerce_order_lookback_hours, 1), 24)
+    lookback_hours = max(settings.naver_commerce_order_lookback_hours, 1)
     now_kst = datetime.now(KST)
     from_dt = now_kst - timedelta(hours=lookback_hours)
 
