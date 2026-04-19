@@ -26,7 +26,7 @@ from services.kpi_from_filtered import (
     kpi_aggregate,
 )
 
-DEFAULT_API_BASE_URL = "https://navermodiba-production.up.railway.app"
+DEFAULT_API_BASE_URL = "https://web-production-0001b.up.railway.app"
 REQUIRED_COLUMNS = [
     "order_id",
     "date",
