@@ -257,39 +257,71 @@ def _get_access_token(client: httpx.Client) -> str:
     raise RuntimeError("네이버 커머스 인증 토큰 발급 실패")
 
 
+_NAVER_API_MAX_WINDOW_HOURS = 24
+
+
+def _fmt_kst(dt: datetime) -> str:
+    s = dt.strftime("%Y-%m-%dT%H:%M:%S.000%z")
+    return s[:-2] + ":" + s[-2:]
+
+
+def _fetch_order_nos_in_window(
+    client: httpx.Client, access_token: str, window_from: datetime, window_to: datetime
+) -> list[str]:
+    """네이버 API 단일 24h 윈도우에서 주문번호 목록을 가져온다."""
+    resp = client.get(
+        "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={
+            "lastChangedType": "PAYED",
+            "lastChangedFrom": _fmt_kst(window_from),
+            "lastChangedTo": _fmt_kst(window_to),
+            "limitCount": 300,
+        },
+    )
+    _log_naver_403(resp)
+    _print_naver_trace_from_json(resp)
+    resp.raise_for_status()
+    return _extract_changed_order_nos(resp.json())
+
+
 def fetch_naver_orders() -> list[dict]:
-    """Railway 고정 Outbound IP 환경에서 네이버 API를 직접 호출한다."""
+    """Railway 고정 Outbound IP 환경에서 네이버 API를 직접 호출한다.
+
+    네이버 last-changed-statuses API는 단일 요청의 최대 시간 범위가 24시간이므로
+    lookback_hours가 24를 초과하면 24시간 단위로 나눠 여러 번 호출한다.
+    """
     base_url = settings.naver_commerce_api_base_url.rstrip("/")
     lookback_hours = max(settings.naver_commerce_order_lookback_hours, 1)
     now_kst = datetime.now(KST)
-    from_dt = now_kst - timedelta(hours=lookback_hours)
+    total_from = now_kst - timedelta(hours=lookback_hours)
 
+    # 24시간 단위 윈도우 목록 생성
+    windows: list[tuple[datetime, datetime]] = []
+    window_end = now_kst
+    while window_end > total_from:
+        window_start = max(window_end - timedelta(hours=_NAVER_API_MAX_WINDOW_HOURS), total_from)
+        windows.append((window_start, window_end))
+        window_end = window_start
+    windows.reverse()
+
+    all_order_nos: list[str] = []
     with httpx.Client(base_url=base_url, timeout=30) as client:
         access_token = _get_access_token(client)
-        changed_response = client.get(
-            "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={
-                "lastChangedType": "PAYED",
-                "lastChangedFrom": from_dt.strftime("%Y-%m-%dT%H:%M:%S.000%z")[:-2]
-                + ":"
-                + from_dt.strftime("%Y-%m-%dT%H:%M:%S.000%z")[-2:],
-                "lastChangedTo": now_kst.strftime("%Y-%m-%dT%H:%M:%S.000%z")[:-2]
-                + ":"
-                + now_kst.strftime("%Y-%m-%dT%H:%M:%S.000%z")[-2:],
-                "limitCount": 300,
-            },
-        )
-        _log_naver_403(changed_response)
-        _print_naver_trace_from_json(changed_response)
-        changed_response.raise_for_status()
-        order_nos = _extract_changed_order_nos(changed_response.json())
-        if not order_nos:
+        for w_from, w_to in windows:
+            nos = _fetch_order_nos_in_window(client, access_token, w_from, w_to)
+            all_order_nos.extend(nos)
+
+        if not all_order_nos:
             return []
+
+        # 중복 제거
+        all_order_nos = list(dict.fromkeys(all_order_nos))
+
         detail_response = client.post(
             "/external/v1/pay-order/seller/product-orders/query",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"productOrderIds": order_nos},
+            json={"productOrderIds": all_order_nos},
         )
         _log_naver_403(detail_response)
         _print_naver_trace_from_json(detail_response)
