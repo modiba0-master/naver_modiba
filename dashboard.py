@@ -290,8 +290,8 @@ def main_content() -> None:
         )
         st.stop()
 
-    default_end = date.today()
-    default_start = default_end
+    default_end = datetime.now(KST).date()
+    default_start = default_end - timedelta(days=6)
 
     st.markdown("## KPI 영역")
     kpi_col1, kpi_col2 = st.columns(2)
