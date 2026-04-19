@@ -1,7 +1,8 @@
 import re
 import os
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -28,10 +29,15 @@ REQUIRED_COLUMNS = [
     "quantity",
     "amount",
 ]
+KST = ZoneInfo("Asia/Seoul")
 
 
 def format_krw(value: float | int) -> str:
     return f"{float(value):,.0f}원"
+
+
+def format_now_kst() -> str:
+    return datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")
 
 
 def extract_multiplier(option_name: str) -> int:
@@ -127,6 +133,72 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def build_weekend_settlement_summary(
+    frame: pd.DataFrame, start_date: date, end_date: date
+) -> pd.DataFrame:
+    """
+    결제일 기준 토/일 매출을 월요일 정산일에 매핑해 확인용 테이블을 만든다.
+    - saturday_amount: 토요일 결제 금액
+    - sunday_amount: 일요일 결제 금액
+    - weekend_total_amount: 토/일 합산 금액(월요일 정산 반영분)
+    - monday_business_total_amount: 해당 월요일 business_date 전체 금액
+    - monday_non_weekend_amount: 월요일 business_date 중 주말분 제외 금액
+    """
+    if frame.empty or "payment_date" not in frame.columns:
+        return pd.DataFrame()
+
+    payment_window_df = frame[
+        (frame["payment_date"].dt.date >= start_date)
+        & (frame["payment_date"].dt.date <= end_date)
+    ].copy()
+    if payment_window_df.empty:
+        return pd.DataFrame()
+
+    grouped_df = payment_window_df[payment_window_df["payment_date"].dt.weekday.isin([5, 6, 0])].copy()
+    if grouped_df.empty:
+        return pd.DataFrame()
+
+    weekday_offset = grouped_df["payment_date"].dt.weekday.map({5: 2, 6: 1, 0: 0}).fillna(0)
+    grouped_df["settlement_monday"] = (
+        grouped_df["payment_date"].dt.normalize() + pd.to_timedelta(weekday_offset, unit="D")
+    ).dt.date
+    grouped_df["payment_weekday"] = grouped_df["payment_date"].dt.weekday
+
+    pivot = (
+        grouped_df.groupby(["settlement_monday", "payment_weekday"], as_index=False)["amount"]
+        .sum()
+        .pivot(index="settlement_monday", columns="payment_weekday", values="amount")
+        .fillna(0.0)
+    )
+    pivot = pivot.rename(
+        columns={
+            5: "saturday_amount",
+            6: "sunday_amount",
+            0: "monday_payment_amount",
+        }
+    )
+    summary = pivot.reset_index()
+    for col in ["saturday_amount", "sunday_amount", "monday_payment_amount"]:
+        if col not in summary.columns:
+            summary[col] = 0.0
+
+    summary["weekend_total_amount"] = summary["saturday_amount"] + summary["sunday_amount"]
+    summary["sat_sun_mon_total_amount"] = (
+        summary["saturday_amount"] + summary["sunday_amount"] + summary["monday_payment_amount"]
+    )
+
+    return summary[
+        [
+            "settlement_monday",
+            "saturday_amount",
+            "sunday_amount",
+            "monday_payment_amount",
+            "weekend_total_amount",
+            "sat_sun_mon_total_amount",
+        ]
+    ].sort_values("settlement_monday", ascending=False)
+
+
 def _get_dashboard_password() -> str:
     """로컬은 st.secrets 우선, 그 외 환경변수 PASSWORD를 사용."""
     try:
@@ -184,18 +256,32 @@ def main_content() -> None:
         st.header("API 설정")
         api_base_url = st.text_input("FastAPI 기본 URL", value=DEFAULT_API_BASE_URL).rstrip("/")
 
+    data_loaded_at = ""
+    data_loaded_mode = "live"
     try:
         raw_df = fetch_order_data(api_base_url)
         order_df = normalize_order_data(raw_df)
         st.session_state["last_good_order_df"] = order_df.copy()
+        data_loaded_at = format_now_kst()
+        st.session_state["last_data_loaded_at"] = data_loaded_at
+        st.session_state["last_data_loaded_mode"] = "live"
     except Exception as exc:
         cached_df = st.session_state.get("last_good_order_df")
         if isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
             st.warning(f"실시간 조회 실패로 직전 데이터로 표시합니다: {exc}")
             order_df = cached_df.copy()
+            data_loaded_at = st.session_state.get("last_data_loaded_at", "")
+            data_loaded_mode = "fallback"
         else:
             st.error(f"주문 데이터 조회 실패: {exc}")
             st.stop()
+
+    if not data_loaded_at:
+        data_loaded_at = st.session_state.get("last_data_loaded_at", "")
+    if data_loaded_mode == "fallback":
+        st.caption(f"최근 데이터 불러온 시각: {data_loaded_at} (직전 성공 데이터)")
+    elif data_loaded_at:
+        st.caption(f"최근 데이터 불러온 시각: {data_loaded_at}")
 
     if order_df.empty:
         st.warning(
@@ -302,6 +388,13 @@ def main_content() -> None:
     )
     daily_kpi = pd.concat([daily_kpi, total_row], ignore_index=True)
     show_data_grid(daily_kpi)
+
+    st.subheader("토/일/월 결제 합산 확인 (결제일 기준)")
+    weekend_summary = build_weekend_settlement_summary(order_df, kpi_start_date, kpi_end_date)
+    if weekend_summary.empty:
+        st.caption("선택한 KPI 기간에 토/일 결제 데이터가 없습니다.")
+    else:
+        show_data_grid(weekend_summary)
 
     st.markdown("---")
     st.markdown("## 분석 영역")
