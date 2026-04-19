@@ -211,7 +211,24 @@ def _raise_http_error(prefix: str, response: httpx.Response) -> None:
     )
 
 
+_outbound_ip_logged = False
+
+
+def _log_outbound_ip_once() -> None:
+    global _outbound_ip_logged
+    if _outbound_ip_logged:
+        return
+    try:
+        ip = httpx.get("https://api.ipify.org", timeout=5).text.strip()
+        logger = __import__("logging").getLogger(__name__)
+        logger.info("Naver API outbound IP: %s", ip)
+    except Exception:
+        pass
+    _outbound_ip_logged = True
+
+
 def _get_access_token(client: httpx.Client) -> str:
+    _log_outbound_ip_once()
     client_id, client_secret = _resolve_client_credentials()
 
     last_response: httpx.Response | None = None
