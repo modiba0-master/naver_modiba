@@ -259,6 +259,15 @@ def _get_access_token(client: httpx.Client) -> str:
 
 _NAVER_API_MAX_WINDOW_HOURS = 24
 
+# 결제 이후 상태 변경이 있어도 누락 없이 수집하기 위해 주요 상태 전체를 조회한다.
+_SYNC_STATUS_TYPES = [
+    "PAYED",
+    "DELIVERY_READY",
+    "DELIVERING",
+    "DELIVERED",
+    "PURCHASE_DECIDED",
+]
+
 
 def _fmt_kst(dt: datetime) -> str:
     s = dt.strftime("%Y-%m-%dT%H:%M:%S.000%z")
@@ -268,21 +277,24 @@ def _fmt_kst(dt: datetime) -> str:
 def _fetch_order_nos_in_window(
     client: httpx.Client, access_token: str, window_from: datetime, window_to: datetime
 ) -> list[str]:
-    """네이버 API 단일 24h 윈도우에서 주문번호 목록을 가져온다."""
-    resp = client.get(
-        "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
-        headers={"Authorization": f"Bearer {access_token}"},
-        params={
-            "lastChangedType": "PAYED",
-            "lastChangedFrom": _fmt_kst(window_from),
-            "lastChangedTo": _fmt_kst(window_to),
-            "limitCount": 300,
-        },
-    )
-    _log_naver_403(resp)
-    _print_naver_trace_from_json(resp)
-    resp.raise_for_status()
-    return _extract_changed_order_nos(resp.json())
+    """네이버 API 단일 24h 윈도우에서 모든 상태 타입의 주문번호 목록을 가져온다."""
+    all_nos: list[str] = []
+    for status_type in _SYNC_STATUS_TYPES:
+        resp = client.get(
+            "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={
+                "lastChangedType": status_type,
+                "lastChangedFrom": _fmt_kst(window_from),
+                "lastChangedTo": _fmt_kst(window_to),
+                "limitCount": 300,
+            },
+        )
+        _log_naver_403(resp)
+        _print_naver_trace_from_json(resp)
+        resp.raise_for_status()
+        all_nos.extend(_extract_changed_order_nos(resp.json()))
+    return all_nos
 
 
 def fetch_naver_orders() -> list[dict]:
