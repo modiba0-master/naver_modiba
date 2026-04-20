@@ -259,9 +259,15 @@ def _get_access_token(client: httpx.Client) -> str:
 
 _NAVER_API_MAX_WINDOW_HOURS = 24
 
-# last-changed-statuses 엔드포인트가 실제로 지원하는 타입.
-# 네이버 API 테스트 결과 PAYED 외 타입은 400을 반환하므로 PAYED만 사용한다.
-_SYNC_STATUS_TYPES = ["PAYED"]
+# 실제 테스트로 확인된 지원 타입:
+#   PAYED            - 결제완료 시각 기준 (신규 주문 수집용)
+#   PURCHASE_DECIDED - 구매확정 시각 기준 (발주 지연으로 PAYED에서 누락된 주문 보완)
+# DELIVERY_READY / DELIVERING / DELIVERED / CANCEL_REQUEST 는 400 반환 → 미지원
+_SYNC_STATUS_TYPES = ["PAYED", "PURCHASE_DECIDED"]
+
+# Rate Limit(429) 발생 시 대기 후 재시도 횟수 및 간격
+_RATE_LIMIT_RETRY = 3
+_RATE_LIMIT_SLEEP = 2.0  # seconds
 
 
 def _fmt_kst(dt: datetime) -> str:
@@ -272,32 +278,46 @@ def _fmt_kst(dt: datetime) -> str:
 def _fetch_order_nos_in_window(
     client: httpx.Client, access_token: str, window_from: datetime, window_to: datetime
 ) -> list[str]:
-    """네이버 API 단일 24h 윈도우에서 주문번호 목록을 가져온다.
-    지원되지 않는 lastChangedType 은 400을 반환하므로 skip 처리한다."""
+    """네이버 API 단일 24h 윈도우에서 PAYED+PURCHASE_DECIDED 주문번호를 수집한다.
+    - 400: 미지원 타입 → skip
+    - 429: Rate Limit → 재시도
+    """
     import logging as _logging
+    import time as _time
     _log = _logging.getLogger(__name__)
 
     all_nos: list[str] = []
     for status_type in _SYNC_STATUS_TYPES:
-        resp = client.get(
-            "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={
-                "lastChangedType": status_type,
-                "lastChangedFrom": _fmt_kst(window_from),
-                "lastChangedTo": _fmt_kst(window_to),
-                "limitCount": 300,
-            },
-        )
-        _log_naver_403(resp)
-        _print_naver_trace_from_json(resp)
-        if resp.status_code == 400:
-            _log.warning(
-                "lastChangedType=%s not supported (400); skipping this type.", status_type
+        for attempt in range(_RATE_LIMIT_RETRY):
+            resp = client.get(
+                "/external/v1/pay-order/seller/product-orders/last-changed-statuses",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={
+                    "lastChangedType": status_type,
+                    "lastChangedFrom": _fmt_kst(window_from),
+                    "lastChangedTo": _fmt_kst(window_to),
+                    "limitCount": 300,
+                },
             )
-            continue
-        resp.raise_for_status()
-        all_nos.extend(_extract_changed_order_nos(resp.json()))
+            _log_naver_403(resp)
+            _print_naver_trace_from_json(resp)
+
+            if resp.status_code == 400:
+                _log.warning("lastChangedType=%s 미지원(400); skip.", status_type)
+                break
+            if resp.status_code == 429:
+                wait = _RATE_LIMIT_SLEEP * (attempt + 1)
+                _log.warning(
+                    "lastChangedType=%s Rate Limit(429); %.1fs 후 재시도 (%d/%d)",
+                    status_type, wait, attempt + 1, _RATE_LIMIT_RETRY,
+                )
+                _time.sleep(wait)
+                continue
+
+            resp.raise_for_status()
+            all_nos.extend(_extract_changed_order_nos(resp.json()))
+            break  # 성공
+
     return all_nos
 
 
