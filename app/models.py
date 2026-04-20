@@ -11,6 +11,10 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # 스마트스토어 '주문번호'(결제 단위). 동일 값에 여러 '상품주문번호'(order_id) 행이 붙을 수 있음.
+    content_order_no: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, default=None
+    )
     product_name: Mapped[str] = mapped_column(String(255))
     option_name: Mapped[str] = mapped_column(String(255), default="")
     quantity: Mapped[int] = mapped_column(Integer)
@@ -23,6 +27,15 @@ class Order(Base):
     payment_date: Mapped[datetime] = mapped_column(DateTime)
     order_date: Mapped[date] = mapped_column(Date, index=True)
     business_date: Mapped[date] = mapped_column(Date, index=True)
+    ordered_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+    placed_order_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+    shipped_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

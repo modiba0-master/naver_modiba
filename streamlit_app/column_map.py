@@ -8,6 +8,7 @@ Streamlit 표(st.dataframe)에 쓸 표시용 영문 -> 한글 헤더 매핑.
 from __future__ import annotations
 
 COLUMN_MAP: dict[str, str] = {
+    "order_id": "상품주문번호",
     "date": "날자",
     "payment_date": "결제일시",
     "buyer_name": "구매자명",
@@ -33,7 +34,12 @@ COLUMN_MAP: dict[str, str] = {
     "multiplier": "배수",
     "address": "전체주소",
     "business_date": "영업일",
+    "order_calendar_date": "주문일(날짜)",
+    "ordered_at": "주문일시",
+    "placed_order_at": "발주처리일시",
+    "shipped_at": "발송처리일시",
     "order_status": "주문상태",
+    "content_order_no": "주문번호",
     "today_revenue": "오늘 매출",
     "total_profit": "총 이익",
     "profit": "이익",
@@ -44,6 +50,12 @@ COLUMN_MAP: dict[str, str] = {
 
 COLUMN_DISPLAY_ORDER: list[str] = [
     "날자",
+    "상품주문번호",
+    "주문번호",
+    "주문일(날짜)",
+    "주문일시",
+    "발주처리일시",
+    "발송처리일시",
     "결제일시",
     "구매자명",
     "구매자ID",

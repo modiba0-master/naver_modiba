@@ -137,7 +137,7 @@ def get_today_summary(today: date) -> dict[str, int]:
                     COUNT(*) AS order_count,
                     COALESCE(SUM(amount), 0) AS total_sales
                 FROM orders
-                WHERE DATE(order_date) = :today
+                WHERE DATE(payment_date) = :today
                 """
             ),
             {"today": today},

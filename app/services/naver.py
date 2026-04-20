@@ -96,10 +96,26 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
         "amount",
     ) or 0
     return {
+        # 상품주문번호(줄 단위 1:1). order.orderId 등 상위 주문번호와 혼동하지 않도록 productOrder 우선.
         "orderId": str(
-            _get_value(item, "productOrder.productOrderId", "productOrderId", "orderId", "id")
+            _get_value(
+                item,
+                "productOrder.productOrderId",
+                "productOrderId",
+                "id",
+            )
             or ""
         ),
+        # 주문번호(결제/장바구니 단위 1:n 상품줄)
+        "contentOrderNo": str(
+            _get_value(
+                item,
+                "order.orderId",
+                "order.contentOrderNo",
+                "contentOrderNo",
+            )
+            or ""
+        ).strip(),
         "productName": str(
             _get_value(item, "productOrder.productName", "productName", "product.productName")
             or ""
@@ -152,6 +168,25 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
                 "paymentDateTime",
                 "lastChangedDate",
             )
+        ),
+        # 주문/발주/발송 시각(상세 API 필드; 없으면 None → sync에서 생략)
+        "orderDate": _get_value(
+            item,
+            "order.orderDate",
+            "productOrder.orderDate",
+            "orderDate",
+        ),
+        "placeOrderDate": _get_value(
+            item,
+            "productOrder.placeOrderDate",
+            "placeOrderDate",
+        ),
+        "sendDate": _get_value(
+            item,
+            "productOrder.delivery.sendDate",
+            "delivery.sendDate",
+            "productOrder.sendDate",
+            "sendDate",
         ),
     }
 
@@ -259,11 +294,13 @@ def _get_access_token(client: httpx.Client) -> str:
 
 _NAVER_API_MAX_WINDOW_HOURS = 24
 
-# 실제 테스트로 확인된 지원 타입:
-#   PAYED            - 결제완료 시각 기준 (신규 주문 수집용)
-#   PURCHASE_DECIDED - 구매확정 시각 기준 (발주 지연으로 PAYED에서 누락된 주문 보완)
-# DELIVERY_READY / DELIVERING / DELIVERED / CANCEL_REQUEST 는 400 반환 → 미지원
-_SYNC_STATUS_TYPES = ["PAYED", "PURCHASE_DECIDED"]
+
+class PaymentRangeQueryError(Exception):
+    """조건형 GET /product-orders(결제일시 구간) 미지원·파라미터 오류 시 last_changed 로 폴백한다."""
+
+
+# last_changed 모드 전용. PAYED 변경 시각 기준이라 결제일과 어긋나 누락될 수 있음.
+_SYNC_STATUS_TYPES = ["PAYED"]
 
 # Rate Limit(429) 발생 시 대기 후 재시도 횟수 및 간격
 _RATE_LIMIT_RETRY = 3
@@ -278,7 +315,7 @@ def _fmt_kst(dt: datetime) -> str:
 def _fetch_order_nos_in_window(
     client: httpx.Client, access_token: str, window_from: datetime, window_to: datetime
 ) -> list[str]:
-    """네이버 API 단일 24h 윈도우에서 PAYED+PURCHASE_DECIDED 주문번호를 수집한다.
+    """네이버 API 단일 24h 윈도우에서 PAYED 주문번호를 수집한다.
     - 400: 미지원 타입 → skip
     - 429: Rate Limit → 재시도
     """
@@ -321,18 +358,7 @@ def _fetch_order_nos_in_window(
     return all_nos
 
 
-def fetch_naver_orders() -> list[dict]:
-    """Railway 고정 Outbound IP 환경에서 네이버 API를 직접 호출한다.
-
-    네이버 last-changed-statuses API는 단일 요청의 최대 시간 범위가 24시간이므로
-    lookback_hours가 24를 초과하면 24시간 단위로 나눠 여러 번 호출한다.
-    """
-    base_url = settings.naver_commerce_api_base_url.rstrip("/")
-    lookback_hours = max(settings.naver_commerce_order_lookback_hours, 1)
-    now_kst = datetime.now(KST)
-    total_from = now_kst - timedelta(hours=lookback_hours)
-
-    # 24시간 단위 윈도우 목록 생성
+def _build_lookback_windows(now_kst: datetime, total_from: datetime) -> list[tuple[datetime, datetime]]:
     windows: list[tuple[datetime, datetime]] = []
     window_end = now_kst
     while window_end > total_from:
@@ -340,6 +366,98 @@ def fetch_naver_orders() -> list[dict]:
         windows.append((window_start, window_end))
         window_end = window_start
     windows.reverse()
+    return windows
+
+
+def _fetch_raw_orders_payment_window(
+    client: httpx.Client,
+    access_token: str,
+    window_from: datetime,
+    window_to: datetime,
+    *,
+    first_window_first_page: bool,
+) -> list[dict[str, Any]]:
+    """GET product-orders: rangeType=PAYED_DATETIME, 단일 윈도우 최대 24h. 페이지네이션."""
+    import logging as _logging
+    import time as _time
+
+    _log = _logging.getLogger(__name__)
+    out: list[dict[str, Any]] = []
+    page = 1
+    max_pages = 500  # 비정상 페이지네이션 시 무한 루프 방지
+    while page <= max_pages:
+        last_resp: httpx.Response | None = None
+        for attempt in range(_RATE_LIMIT_RETRY):
+            resp = client.get(
+                "/external/v1/pay-order/seller/product-orders",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={
+                    "rangeType": "PAYED_DATETIME",
+                    "from": _fmt_kst(window_from),
+                    "to": _fmt_kst(window_to),
+                    "page": page,
+                    "size": 300,
+                },
+            )
+            last_resp = resp
+            _log_naver_403(resp)
+            _print_naver_trace_from_json(resp)
+
+            if resp.status_code == 400:
+                if first_window_first_page and page == 1:
+                    raise PaymentRangeQueryError(resp.text[:500])
+                _log.warning(
+                    "product-orders PAYED_DATETIME 윈도우 page=%s 400; 이 윈도우는 건너뜀.",
+                    page,
+                )
+                return out
+            if resp.status_code == 429:
+                wait = _RATE_LIMIT_SLEEP * (attempt + 1)
+                _log.warning(
+                    "product-orders Rate Limit(429); %.1fs 후 재시도 (%d/%d)",
+                    wait,
+                    attempt + 1,
+                    _RATE_LIMIT_RETRY,
+                )
+                _time.sleep(wait)
+                continue
+
+            resp.raise_for_status()
+            body = resp.json()
+            chunk = _extract_items(body)
+            out.extend(chunk)
+
+            pag: dict[str, Any] = {}
+            data = body.get("data")
+            if isinstance(data, dict) and isinstance(data.get("pagination"), dict):
+                pag = data["pagination"]
+            has_next = pag.get("hasNext")
+
+            if has_next is True:
+                page += 1
+                break
+            if has_next is False:
+                return out
+            if len(chunk) < 300:
+                return out
+            page += 1
+            break
+        else:
+            if last_resp is None:
+                raise RuntimeError("product-orders 결제일시 조회: 응답 없음")
+            _raise_http_error("product-orders 결제일시 조회 재시도 소진", last_resp)
+
+    _log.warning("product-orders PAYED_DATETIME page 상한(%s) 도달", max_pages)
+    return out
+
+
+def _fetch_naver_orders_via_last_changed() -> list[dict]:
+    """변경일시(last-changed) → 상품주문번호 수집 → query 상세."""
+    base_url = settings.naver_commerce_api_base_url.rstrip("/")
+    lookback_hours = max(settings.naver_commerce_order_lookback_hours, 1)
+    now_kst = datetime.now(KST)
+    total_from = now_kst - timedelta(hours=lookback_hours)
+    windows = _build_lookback_windows(now_kst, total_from)
 
     all_order_nos: list[str] = []
     with httpx.Client(base_url=base_url, timeout=30) as client:
@@ -351,7 +469,6 @@ def fetch_naver_orders() -> list[dict]:
         if not all_order_nos:
             return []
 
-        # 중복 제거
         all_order_nos = list(dict.fromkeys(all_order_nos))
 
         detail_response = client.post(
@@ -366,3 +483,81 @@ def fetch_naver_orders() -> list[dict]:
 
         normalized = [_to_internal_order(item) for item in raw_items]
         return [item for item in normalized if item["orderId"]]
+
+
+def _fetch_naver_orders_via_payment_datetime() -> list[dict]:
+    """결제일시(PAYED_DATETIME) 구간으로 상세를 직접 받는다. last_changed 누락(결제·변경 시각 불일치) 완화.
+
+    - API당 최대 24h 구간 → lookback을 24h 윈도로 쪼갬.
+    - `productOrderStatuses` 미지정: 배송완료 등 상태도 구간 안에 있으면 포함(공식 가이드).
+    """
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+    base_url = settings.naver_commerce_api_base_url.rstrip("/")
+    lookback_hours = max(settings.naver_commerce_order_lookback_hours, 1)
+    now_kst = datetime.now(KST)
+    total_from = now_kst - timedelta(hours=lookback_hours)
+    windows = _build_lookback_windows(now_kst, total_from)
+
+    raw_items: list[dict[str, Any]] = []
+    with httpx.Client(base_url=base_url, timeout=60) as client:
+        access_token = _get_access_token(client)
+        for idx, (w_from, w_to) in enumerate(windows):
+            chunk = _fetch_raw_orders_payment_window(
+                client,
+                access_token,
+                w_from,
+                w_to,
+                first_window_first_page=(idx == 0),
+            )
+            raw_items.extend(chunk)
+            _log.info(
+                "product-orders PAYED_DATETIME window %s~%s rows=%s (누적 %s)",
+                w_from,
+                w_to,
+                len(chunk),
+                len(raw_items),
+            )
+
+    seen: dict[str, dict[str, Any]] = {}
+    for it in raw_items:
+        oid = str(
+            _get_value(
+                it,
+                "productOrder.productOrderId",
+                "productOrderId",
+                "productOrderNo",
+            )
+            or ""
+        )
+        if oid:
+            seen[oid] = it
+    deduped = list(seen.values())
+
+    normalized = [_to_internal_order(item) for item in deduped]
+    return [item for item in normalized if item["orderId"]]
+
+
+def fetch_naver_orders() -> list[dict]:
+    """네이버 커머스에서 상품주문 단위 목록을 가져온다.
+
+    기본(`NAVER_ORDER_SYNC_MODE=payment_datetime`): **결제일시** 구간 조회 API로
+    lookback 구간을 24시간 단위로 채운 뒤, 날짜 기준 누락을 줄인다.
+
+    `last_changed`: 기존처럼 변경일시 API + query(결제는 됐는데 PAYED 변경이 창 밖이면 누락 가능).
+    """
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+    mode = (settings.naver_order_sync_mode or "payment_datetime").strip().lower()
+    if mode == "last_changed":
+        return _fetch_naver_orders_via_last_changed()
+    try:
+        return _fetch_naver_orders_via_payment_datetime()
+    except PaymentRangeQueryError as exc:
+        _log.warning(
+            "결제일시 구간 조회 미사용/오류 → last_changed 로 폴백합니다: %s",
+            exc,
+        )
+        return _fetch_naver_orders_via_last_changed()

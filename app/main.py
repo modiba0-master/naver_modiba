@@ -6,7 +6,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from app.config import settings
-from app.database import Base, SessionLocal, engine
+from app.database import Base, SessionLocal, engine, ensure_orders_schema
 from app.routers.analytics import router as analytics_router
 from app.routers.health import router as health_router
 from app.services.daily_summary_service import generate_daily_summary
@@ -48,6 +48,7 @@ def _scheduled_sync_orders_and_summary() -> None:
 async def lifespan(app: FastAPI):
     # Data preservation: never drop runtime tables on startup.
     Base.metadata.create_all(bind=engine)
+    ensure_orders_schema(engine)
 
     scheduler = None
     if settings.enable_worker and settings.run_sync_scheduler_in_api:

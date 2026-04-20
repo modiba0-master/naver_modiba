@@ -8,7 +8,7 @@ os.environ["DATABASE_URL"] = "sqlite:///./test.db"
 os.environ["ENABLE_WORKER"] = "false"
 os.environ["NTFY_TOPIC"] = ""
 
-from app.database import Base, get_db  # noqa: E402
+from app.database import Base, ensure_orders_schema, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
@@ -22,6 +22,7 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 def setup_database():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    ensure_orders_schema(engine)
     yield
     Base.metadata.drop_all(bind=engine)
 

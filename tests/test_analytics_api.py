@@ -29,7 +29,12 @@ def test_analytics_endpoints(client, db_session, monkeypatch):
 
     raw_response = client.get("/analytics/orders-raw")
     assert raw_response.status_code == 200
-    assert "items" in raw_response.json()
+    body = raw_response.json()
+    assert "items" in body
+    assert body["items"]
+    first = body["items"][0]
+    assert "order_calendar_date" in first
+    assert "date" in first
 
     margin_response = client.get("/analytics/margin")
     assert margin_response.status_code == 200

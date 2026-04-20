@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -31,7 +32,11 @@ def orders_raw(
     db: Session = Depends(get_db),
 ):
     items = get_orders_raw(db, start_date=start_date, end_date=end_date)
-    return OrdersRawResponse(items=items)
+    items = [item.model_dump(mode="json") for item in items]
+    return JSONResponse(
+        content={"items": items},
+        media_type="application/json; charset=utf-8",
+    )
 
 
 @router.get("/margin", response_model=RevenueResponse)
