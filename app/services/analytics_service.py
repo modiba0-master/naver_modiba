@@ -16,7 +16,7 @@ def get_orders_by_date(
     grouped: dict[date, dict[str, Decimal | int]] = {}
 
     for item in raw_items:
-        day = item.business_date
+        day = item.date  # 실제 결제일 기준 집계
         if day not in grouped:
             grouped[day] = {
                 "total_amount": Decimal(0),
@@ -59,17 +59,20 @@ def get_orders_raw(
         if not is_valid_order_status(normalized_status):
             continue
 
+        # 날짜 필터는 실제 결제일 기준으로 적용한다.
+        payment_day = row.payment_date.date()
+        if start_date and payment_day < start_date.date():
+            continue
+        if end_date and payment_day > end_date.date():
+            continue
+
         business_date = calculate_business_date(row.payment_date)
-        if start_date and business_date < start_date.date():
-            continue
-        if end_date and business_date > end_date.date():
-            continue
 
         items.append(
             OrderRawItem(
                 order_id=row.order_id,
-                date=business_date,
-                business_date=business_date,
+                date=payment_day,          # 메인 집계 기준: 실제 결제일
+                business_date=business_date,  # 토/일 정산 합산 테이블용으로 보존
                 payment_date=row.payment_date,
                 buyer_name=row.buyer_name,
                 buyer_id=row.buyer_id,
