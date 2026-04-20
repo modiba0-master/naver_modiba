@@ -6,8 +6,7 @@ from contextlib import contextmanager
 from datetime import date
 from typing import Any
 
-from sqlalchemy import MetaData, Table, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import MetaData, Table, select, text
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.orm import Session
 
@@ -135,18 +134,33 @@ def _upsert_daily_summary(
     affected = 0
     for i in range(0, len(rows), upsert_chunk_size):
         chunk = rows[i : i + upsert_chunk_size]
-        stmt = sqlite_insert(daily_summary).values(chunk)
-        upsert_stmt = stmt.on_conflict_do_update(
-            index_elements=["date", "product_id", "option_id"],
-            set_={
-                "orders": stmt.excluded.orders,
-                "revenue": stmt.excluded.revenue,
-                "cancel_count": stmt.excluded.cancel_count,
-                "refund_amount": stmt.excluded.refund_amount,
-                "profit": stmt.excluded.profit,
-            },
+        # MySQL/MariaDB 호환 INSERT ... ON DUPLICATE KEY UPDATE
+        placeholders = ", ".join(
+            f"(:date_{j}, :product_id_{j}, :option_id_{j}, :orders_{j}, :revenue_{j}, "
+            f":cancel_count_{j}, :refund_amount_{j}, :profit_{j})"
+            for j in range(len(chunk))
         )
-        result = session.execute(upsert_stmt)
+        params: dict[str, Any] = {}
+        for j, row in enumerate(chunk):
+            params[f"date_{j}"] = row["date"]
+            params[f"product_id_{j}"] = row["product_id"]
+            params[f"option_id_{j}"] = row["option_id"]
+            params[f"orders_{j}"] = row["orders"]
+            params[f"revenue_{j}"] = row["revenue"]
+            params[f"cancel_count_{j}"] = row["cancel_count"]
+            params[f"refund_amount_{j}"] = row["refund_amount"]
+            params[f"profit_{j}"] = row["profit"]
+
+        sql = text(
+            f"INSERT INTO daily_summary "
+            f"(`date`, product_id, option_id, orders, revenue, cancel_count, refund_amount, profit) "
+            f"VALUES {placeholders} "
+            f"ON DUPLICATE KEY UPDATE "
+            f"orders=VALUES(orders), revenue=VALUES(revenue), "
+            f"cancel_count=VALUES(cancel_count), refund_amount=VALUES(refund_amount), "
+            f"profit=VALUES(profit)"
+        )
+        result = session.execute(sql, params)
         affected += int(result.rowcount or 0)
     return affected
 

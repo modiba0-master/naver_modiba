@@ -16,8 +16,18 @@ alwaysApply: true
 ## UI·문구
 - 대시보드 라벨·필터·KPI는 **한국어**를 기본으로 한다(기존 화면과 톤 맞춤).
 
+## 데이터베이스 — Railway MariaDB 최우선
+- **이 프로젝트(및 신규 Railway 프로젝트) DB 연결 우선순위: Railway MariaDB → 외부 PostgreSQL → SQLite(로컬 개발 전용).**
+- Railway MariaDB 접속 정보(031_naver_modiba 프로젝트):
+  - 내부(서비스 간): `mysql+pymysql://railway:<pw>@mariadb.railway.internal:3306/railway`
+  - 외부(로컬/마이그레이션): `mysql+pymysql://railway:<pw>@monorail.proxy.rlwy.net:19572/railway`
+  - `DATABASE_URL` 환경변수로 주입 — `app/config.py` 기본값은 `sqlite:///./app.db`이므로 **Railway 서비스에 반드시 `DATABASE_URL` 환경변수를 설정해야 한다**.
+- upsert 문법: SQLite `ON CONFLICT DO UPDATE` ❌ → MySQL/MariaDB `INSERT ... ON DUPLICATE KEY UPDATE` ✅
+- 마이그레이션: 신규 DB 연결 시 기존 SQLite 데이터는 PUBLIC URL(`monorail.proxy.rlwy.net:19572`)로 로컬에서 직접 마이그레이션 가능.
+
 ## 외부 API·배포
 - Railway 등 배포 환경에서는 네이버 API가 **IP 화이트리스트**로 막힐 수 있다. 로컬과 배포 동작이 다르면 먼저 게이트웨이/403·`GW.IP_NOT_ALLOWED` 가능성을 고려한다.
+- Railway Static Outbound IP는 **백엔드 서비스**에 설정해야 한다(대시보드 서비스에 설정하면 효과 없음).
 
 ## 테스트
 - `analytics`·서비스 로직을 바꾸면 `tests/`에 맞는 테스트를 추가하거나 기존 테스트를 갱신한다.

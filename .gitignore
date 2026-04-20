@@ -6,3 +6,4 @@ __pycache__/
 htmlcov/
 app.db
 test.db
+migrate_to_mariadb.py
