@@ -259,14 +259,9 @@ def _get_access_token(client: httpx.Client) -> str:
 
 _NAVER_API_MAX_WINDOW_HOURS = 24
 
-# 결제 이후 상태 변경이 있어도 누락 없이 수집하기 위해 주요 상태 전체를 조회한다.
-_SYNC_STATUS_TYPES = [
-    "PAYED",
-    "DELIVERY_READY",
-    "DELIVERING",
-    "DELIVERED",
-    "PURCHASE_DECIDED",
-]
+# last-changed-statuses 엔드포인트가 실제로 지원하는 타입.
+# 네이버 API 테스트 결과 PAYED 외 타입은 400을 반환하므로 PAYED만 사용한다.
+_SYNC_STATUS_TYPES = ["PAYED"]
 
 
 def _fmt_kst(dt: datetime) -> str:
@@ -277,7 +272,11 @@ def _fmt_kst(dt: datetime) -> str:
 def _fetch_order_nos_in_window(
     client: httpx.Client, access_token: str, window_from: datetime, window_to: datetime
 ) -> list[str]:
-    """네이버 API 단일 24h 윈도우에서 모든 상태 타입의 주문번호 목록을 가져온다."""
+    """네이버 API 단일 24h 윈도우에서 주문번호 목록을 가져온다.
+    지원되지 않는 lastChangedType 은 400을 반환하므로 skip 처리한다."""
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
     all_nos: list[str] = []
     for status_type in _SYNC_STATUS_TYPES:
         resp = client.get(
@@ -292,6 +291,11 @@ def _fetch_order_nos_in_window(
         )
         _log_naver_403(resp)
         _print_naver_trace_from_json(resp)
+        if resp.status_code == 400:
+            _log.warning(
+                "lastChangedType=%s not supported (400); skipping this type.", status_type
+            )
+            continue
         resp.raise_for_status()
         all_nos.extend(_extract_changed_order_nos(resp.json()))
     return all_nos

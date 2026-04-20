@@ -326,7 +326,9 @@ def main_content() -> None:
         if st.button("⚠ 실시간 강제 새로고침"):
             st.warning("강제 새로고침은 캐시를 비우고 API를 재호출합니다. 일시 장애 시 오류가 노출될 수 있습니다.")
             st.cache_data.clear()
-            st.session_state.pop("last_good_order_df", None)
+            for _k in ("last_good_order_df", "kpi_start_date", "kpi_end_date",
+                       "analysis_start_date", "analysis_end_date"):
+                st.session_state.pop(_k, None)
             st.rerun()
 
     with st.sidebar:
