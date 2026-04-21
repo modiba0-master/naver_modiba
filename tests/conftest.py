@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
 os.environ["ENABLE_WORKER"] = "false"
+os.environ["RUN_SYNC_SCHEDULER_IN_API"] = "false"
 os.environ["NTFY_TOPIC"] = ""
 
 from app.database import Base, ensure_orders_schema, get_db  # noqa: E402

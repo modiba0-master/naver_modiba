@@ -7,9 +7,11 @@ import httpx
 
 from app.config import settings
 
+# 커머스API productOrderStatus (문서 기준 코드). 미등록 코드는 그대로 두면 sync에서 화이트리스트로 걸림.
 _STATUS_MAP = {
+    "PAYMENT_WAITING": "결제대기",  # 미결제 — DB 신규 INSERT 대상 아님(의도)
     "PAYED": "신규주문",
-    "DELIVERY_READY": "배송준비",
+    "DELIVERY_READY": "배송준비",  # 구버전/일부 응답 호환
     "DELIVERING": "배송중",
     "DELIVERED": "배송완료",
     "PURCHASE_DECIDED": "구매확정",

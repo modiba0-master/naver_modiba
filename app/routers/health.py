@@ -10,7 +10,8 @@ router = APIRouter(tags=["health"])
 def health_check():
     """
     동기화 스케줄러는 `enable_worker` AND `RUN_SYNC_SCHEDULER_IN_API` 일 때만
-    API 프로세스 안에서 1분 주기로 동작한다. 둘 중 하나라도 꺼지면 이 경로로는 네이버 폴링이 없다.
+    API 프로세스 안에서 `order_poll_interval_seconds` 주기로 동작한다.
+    `RUN_SYNC_SCHEDULER_IN_API` 기본값은 True(환경변수로 false 가능).
     """
     scheduler_would_run = bool(
         settings.enable_worker and settings.run_sync_scheduler_in_api

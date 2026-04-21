@@ -1,3 +1,5 @@
+import logging
+from collections import Counter
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -7,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.models import Order
 from app.services.naver import fetch_naver_orders
+
+logger = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -86,24 +90,35 @@ def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
 
 
 def sync_orders(db: Session) -> int:
+    """네이버에서 상품주문 단위 목록을 가져와 DB에 반영한다.
+
+    - `order_id`는 네이버 **상품주문번호**(productOrderId). DB에 없으면 신규 INSERT, 있으면 타임라인만 merge.
+    - 반환값은 이번 호출에서 **새로 INSERT된 행 수**(기존 행 갱신은 포함하지 않음).
+    """
     payloads = fetch_naver_orders()
     inserted_count = 0
+    merged_existing = 0
+    invalid_status = Counter()
+    skipped_bad_qty = 0
 
     for payload in payloads:
         order_id = payload["orderId"]
         existing = db.scalar(select(Order).where(Order.order_id == order_id))
         if existing is not None:
             _merge_timeline_from_payload(existing, payload)
+            merged_existing += 1
             continue
 
         order_status = normalize_order_status(payload.get("orderStatus", ""))
         if not is_valid_order_status(order_status):
+            invalid_status[order_status or "(empty)"] += 1
             continue
 
         quantity = int(payload["quantity"])
         amount = int(payload["paymentAmount"])
         if quantity <= 0 or amount < 0:
             # Guardrail: skip suspicious payloads to avoid polluted analytics rows.
+            skipped_bad_qty += 1
             continue
 
         payment_date = _parse_payment_date(payload["paymentDate"])
@@ -137,4 +152,18 @@ def sync_orders(db: Session) -> int:
         inserted_count += 1
 
     db.commit()
+    logger.info(
+        "sync_orders: fetched=%s inserted=%s merged_existing=%s skipped_invalid_status=%s skipped_bad_qty=%s",
+        len(payloads),
+        inserted_count,
+        merged_existing,
+        sum(invalid_status.values()),
+        skipped_bad_qty,
+    )
+    if invalid_status:
+        logger.warning(
+            "sync_orders: 신규 중 허용되지 않은 orderStatus(저장 안 함): %s — "
+            "네이버 API 코드가 PAYED 등으로 매핑되는지 app/services/naver.py _STATUS_MAP 확인",
+            dict(invalid_status.most_common(20)),
+        )
     return inserted_count

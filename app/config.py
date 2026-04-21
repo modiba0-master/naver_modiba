@@ -8,8 +8,9 @@ class Settings(BaseSettings):
     ntfy_topic: str = "naver-commerce-orders"
     order_poll_interval_seconds: int = 60
     enable_worker: bool = True
+    # 배포 시 별도 설정 없이 API 프로세스에서 1분 주기 sync(기본). 워커만 쓸 때 false.
     run_sync_scheduler_in_api: bool = Field(
-        default=False, alias="RUN_SYNC_SCHEDULER_IN_API"
+        default=True, alias="RUN_SYNC_SCHEDULER_IN_API"
     )
     naver_commerce_api_client_id: str | None = None
     naver_commerce_api_client_secret: str | None = None
