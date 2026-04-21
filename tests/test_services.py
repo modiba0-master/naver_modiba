@@ -1,4 +1,5 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -6,12 +7,26 @@ from app.models import Order
 from app.services.sync import calculate_business_date, sync_orders
 
 
-def test_calculate_business_date_cutoff_and_weekend():
-    assert calculate_business_date(datetime(2026, 4, 14, 15, 59)).isoformat() == "2026-04-14"  # Tue before 16
-    assert calculate_business_date(datetime(2026, 4, 14, 16, 0)).isoformat() == "2026-04-15"  # Tue after 16
-    assert calculate_business_date(datetime(2026, 4, 17, 16, 0)).isoformat() == "2026-04-20"  # Fri after 16 -> Mon
-    assert calculate_business_date(datetime(2026, 4, 18, 10, 0)).isoformat() == "2026-04-20"  # Sat -> Mon
-    assert calculate_business_date(datetime(2026, 4, 19, 10, 0)).isoformat() == "2026-04-20"  # Sun -> Mon
+def test_calculate_business_date_kst_cutoff_no_weekend_roll():
+    assert calculate_business_date(datetime(2026, 4, 14, 15, 59)).isoformat() == "2026-04-14"  # before 16 KST
+    assert calculate_business_date(datetime(2026, 4, 14, 16, 0)).isoformat() == "2026-04-15"  # after 16 -> next day
+    assert calculate_business_date(datetime(2026, 4, 17, 16, 0)).isoformat() == "2026-04-18"  # Fri after 16 -> Sat
+    assert calculate_business_date(datetime(2026, 4, 18, 10, 0)).isoformat() == "2026-04-18"  # Sat before 16
+    assert calculate_business_date(datetime(2026, 4, 18, 16, 0)).isoformat() == "2026-04-19"  # Sat after 16 -> Sun
+    assert calculate_business_date(datetime(2026, 4, 19, 10, 0)).isoformat() == "2026-04-19"  # Sun before 16
+    # UTC 2026-04-14 07:00Z = KST 16:00 -> 익일
+    assert (
+        calculate_business_date(
+            datetime(2026, 4, 14, 7, 0, tzinfo=ZoneInfo("UTC"))
+        ).isoformat()
+        == "2026-04-15"
+    )
+    assert (
+        calculate_business_date(
+            datetime(2026, 4, 14, 6, 59, 59, tzinfo=ZoneInfo("UTC"))
+        ).isoformat()
+        == "2026-04-14"
+    )
 
 
 def test_sync_orders_inserts_data(db_session, monkeypatch):

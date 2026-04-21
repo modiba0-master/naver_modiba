@@ -8,6 +8,8 @@ import httpx
 import pandas as pd
 import streamlit as st
 
+from app.aggregation_display import format_kst_sales_window
+
 from streamlit_app.services.data_grid import show_data_grid
 from streamlit_app.services.kpi_from_filtered import (
     delta_rate,
@@ -118,7 +120,11 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
             df[col] = ""
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
+    pay = pd.to_datetime(df["payment_date"], errors="coerce")
+    if pay.dt.tz is None:
+        df["payment_date"] = pay.dt.tz_localize(KST, ambiguous="NaT", nonexistent="NaT")
+    else:
+        df["payment_date"] = pay.dt.tz_convert(KST)
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
     df["multiplier"] = df["option_name"].apply(extract_multiplier)
@@ -129,74 +135,13 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     df["short_address"] = df["address"].astype(str).str.slice(0, 20)
     if "customer_id" not in df.columns:
         df["customer_id"] = df["buyer_id"]
+    ok_dates = df["date"].notna()
+    df["aggregation_window_kst"] = ""
+    df.loc[ok_dates, "aggregation_window_kst"] = (
+        df.loc[ok_dates, "date"].dt.date.map(format_kst_sales_window)
+    )
     df = df.dropna(subset=["date"]).copy()
     return df
-
-
-def build_weekend_settlement_summary(
-    frame: pd.DataFrame, start_date: date, end_date: date
-) -> pd.DataFrame:
-    """
-    결제일 기준 토/일 매출을 월요일 정산일에 매핑해 확인용 테이블을 만든다.
-    - saturday_amount: 토요일 결제 금액
-    - sunday_amount: 일요일 결제 금액
-    - weekend_total_amount: 토/일 합산 금액(월요일 정산 반영분)
-    - monday_business_total_amount: 해당 월요일 business_date 전체 금액
-    - monday_non_weekend_amount: 월요일 business_date 중 주말분 제외 금액
-    """
-    if frame.empty or "payment_date" not in frame.columns:
-        return pd.DataFrame()
-
-    payment_window_df = frame[
-        (frame["payment_date"].dt.date >= start_date)
-        & (frame["payment_date"].dt.date <= end_date)
-    ].copy()
-    if payment_window_df.empty:
-        return pd.DataFrame()
-
-    grouped_df = payment_window_df[payment_window_df["payment_date"].dt.weekday.isin([5, 6, 0])].copy()
-    if grouped_df.empty:
-        return pd.DataFrame()
-
-    weekday_offset = grouped_df["payment_date"].dt.weekday.map({5: 2, 6: 1, 0: 0}).fillna(0)
-    grouped_df["settlement_monday"] = (
-        grouped_df["payment_date"].dt.normalize() + pd.to_timedelta(weekday_offset, unit="D")
-    ).dt.date
-    grouped_df["payment_weekday"] = grouped_df["payment_date"].dt.weekday
-
-    pivot = (
-        grouped_df.groupby(["settlement_monday", "payment_weekday"], as_index=False)["amount"]
-        .sum()
-        .pivot(index="settlement_monday", columns="payment_weekday", values="amount")
-        .fillna(0.0)
-    )
-    pivot = pivot.rename(
-        columns={
-            5: "saturday_amount",
-            6: "sunday_amount",
-            0: "monday_payment_amount",
-        }
-    )
-    summary = pivot.reset_index()
-    for col in ["saturday_amount", "sunday_amount", "monday_payment_amount"]:
-        if col not in summary.columns:
-            summary[col] = 0.0
-
-    summary["weekend_total_amount"] = summary["saturday_amount"] + summary["sunday_amount"]
-    summary["sat_sun_mon_total_amount"] = (
-        summary["saturday_amount"] + summary["sunday_amount"] + summary["monday_payment_amount"]
-    )
-
-    return summary[
-        [
-            "settlement_monday",
-            "saturday_amount",
-            "sunday_amount",
-            "monday_payment_amount",
-            "weekend_total_amount",
-            "sat_sun_mon_total_amount",
-        ]
-    ].sort_values("settlement_monday", ascending=False)
 
 
 def _get_dashboard_password() -> str:
@@ -298,9 +243,22 @@ def main_content() -> None:
     st.markdown("## KPI 영역")
     kpi_col1, kpi_col2 = st.columns(2)
     with kpi_col1:
-        kpi_start_date = st.date_input("KPI 시작일", value=default_start, key="kpi_start_date")
+        kpi_start_date = st.date_input(
+            "KPI 시작일 (매출 귀속일)",
+            value=default_start,
+            key="kpi_start_date",
+        )
     with kpi_col2:
-        kpi_end_date = st.date_input("KPI 종료일", value=default_end, key="kpi_end_date")
+        kpi_end_date = st.date_input(
+            "KPI 종료일 (매출 귀속일)",
+            value=default_end,
+            key="kpi_end_date",
+        )
+
+    st.caption(
+        "매출 귀속일 D: 결제 시각(KST)이 [D-1일 16:00, D일 16:00) 구간에 들어가는 주문이 D일 매출로 집계됩니다. "
+        "표·상세의 「매출집계구간」 열에 동일 구간을 표시합니다."
+    )
 
     if kpi_start_date > kpi_end_date:
         st.error("KPI 시작일은 KPI 종료일보다 클 수 없습니다.")
@@ -358,7 +316,7 @@ def main_content() -> None:
     )
 
     st.markdown("")
-    st.subheader("KPI 일자 테이블 (최근 7일)")
+    st.subheader("KPI 일자 테이블 (최근 7일, KST 매출 집계구간)")
     kpi_daily_start = default_end - timedelta(days=6)
     kpi_daily_mask = (
         (order_df["date"].dt.date >= kpi_daily_start)
@@ -378,9 +336,14 @@ def main_content() -> None:
         )
         .sort_values("date", ascending=False)
     )
+    daily_kpi["aggregation_window_kst"] = daily_kpi["date"].map(format_kst_sales_window)
+    daily_kpi = daily_kpi[
+        ["aggregation_window_kst", "date", "order_count", "total_amount", "total_quantity"]
+    ]
     total_row = pd.DataFrame(
         [
             {
+                "aggregation_window_kst": "—",
                 "date": "합계",
                 "order_count": daily_kpi["order_count"].sum(),
                 "total_amount": daily_kpi["total_amount"].sum(),
@@ -391,20 +354,21 @@ def main_content() -> None:
     daily_kpi = pd.concat([daily_kpi, total_row], ignore_index=True)
     show_data_grid(daily_kpi)
 
-    st.subheader("토/일/월 결제 합산 확인 (결제일 기준)")
-    weekend_summary = build_weekend_settlement_summary(order_df, kpi_start_date, kpi_end_date)
-    if weekend_summary.empty:
-        st.caption("선택한 KPI 기간에 토/일 결제 데이터가 없습니다.")
-    else:
-        show_data_grid(weekend_summary)
-
     st.markdown("---")
     st.markdown("## 분석 영역")
     ana_col1, ana_col2 = st.columns(2)
     with ana_col1:
-        analysis_start_date = st.date_input("분석 시작일", value=default_start, key="analysis_start_date")
+        analysis_start_date = st.date_input(
+            "분석 시작일 (매출 귀속일)",
+            value=default_start,
+            key="analysis_start_date",
+        )
     with ana_col2:
-        analysis_end_date = st.date_input("분석 종료일", value=default_end, key="analysis_end_date")
+        analysis_end_date = st.date_input(
+            "분석 종료일 (매출 귀속일)",
+            value=default_end,
+            key="analysis_end_date",
+        )
     buyer_name_search = st.text_input("구매자명 검색", "", key="analysis_buyer_search")
 
     if analysis_start_date > analysis_end_date:

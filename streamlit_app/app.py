@@ -7,7 +7,8 @@ _RUN_WEB_DASHBOARD = __name__ == "__main__"
 if _RUN_WEB_DASHBOARD:
     runpy.run_path(str(Path(__file__).with_name("dashboard.py")), run_name="__main__")
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -23,6 +24,8 @@ from services.queries import (
     get_time_analysis,
     get_top_products,
 )
+
+KST = ZoneInfo("Asia/Seoul")
 
 WEEKDAY_LABELS = {
     0: "월",
@@ -211,12 +214,15 @@ def main() -> None:
             index=0,
         )
         st.markdown("---")
-        today = date.today()
+        today = datetime.now(KST).date()
         default_start = today - timedelta(days=30)
         start_date = st.date_input("시작일", value=default_start)
         end_date = st.date_input("종료일", value=today)
-        st.caption("집계 기준: 영업일 16:00 컷오프, 금요일 16:00 이후 주문은 월요일 매출로 귀속")
-        st.caption("판매관리 집계 상태: 상태 제한 없음 (결제일 기준, 해당 일자 결제건 전체)")
+        st.caption(
+            "집계: 매출 귀속일 D = 결제(KST)가 [D-1 16:00, D 16:00)에 속하는 주문. "
+            "시간대 차트는 DB payment_date를 UTC로 두고 +9h 보정한 값입니다."
+        )
+        st.caption("판매관리 집계 상태: 상태 제한 없음 (매출 귀속일 기준)")
 
     if start_date and end_date and start_date > end_date:
         st.error("시작일은 종료일보다 클 수 없습니다.")

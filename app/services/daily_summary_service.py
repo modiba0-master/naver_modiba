@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import MetaData, Table, select, text
@@ -67,18 +67,21 @@ def _build_aggregates(
     product_key: str,
     option_key: str,
     status_key: str,
-    ordered_at_key: str,
+    day_key: str,
     amount_key: str,
 ) -> dict[tuple[date, str, str], dict[str, int]]:
     aggregates: dict[tuple[date, str, str], dict[str, int]] = {}
 
     for row in rows:
-        ordered_at = row.get(ordered_at_key)
-        if ordered_at is None:
-            # Skip malformed rows instead of failing whole batch.
+        raw_day = row.get(day_key)
+        if raw_day is None:
             continue
-
-        day = ordered_at.date()
+        if isinstance(raw_day, datetime):
+            day = raw_day.date()
+        elif isinstance(raw_day, date):
+            day = raw_day
+        else:
+            continue
         product_id = str(row.get(product_key) or "")
         option_id = str(row.get(option_key) or "")
         line_amount = int(row.get(amount_key) or 0)
@@ -170,7 +173,7 @@ def generate_daily_summary(batch_size: int = 5000, upsert_chunk_size: int = 2000
     Read orders from MariaDB and upsert grouped daily summary.
 
     Group key:
-      - date(ordered_at)
+      - business_date (매출 귀속일, KST 결제 16:00 컷오프; 컬럼 없으면 payment_date 날짜)
       - product_id
       - option_id
 
@@ -202,7 +205,7 @@ def generate_daily_summary(batch_size: int = 5000, upsert_chunk_size: int = 2000
         product_key = _pick_existing_column(orders, "product_id", "product_name")
         option_key = _pick_existing_column(orders, "option_id", "option_name")
         status_key = _pick_existing_column(orders, "status", "order_status")
-        ordered_at_key = _pick_existing_column(orders, "ordered_at", "payment_date")
+        day_key = _pick_existing_column(orders, "business_date", "payment_date")
         amount_key = _pick_existing_column(orders, "amount", "price")
 
         while True:
@@ -213,7 +216,7 @@ def generate_daily_summary(batch_size: int = 5000, upsert_chunk_size: int = 2000
                     orders.c[product_key],
                     orders.c[option_key],
                     orders.c[status_key],
-                    orders.c[ordered_at_key],
+                    orders.c[day_key],
                     orders.c[amount_key],
                 )
                 .where(orders.c.id > last_seen_id)
@@ -235,7 +238,7 @@ def generate_daily_summary(batch_size: int = 5000, upsert_chunk_size: int = 2000
                 product_key=product_key,
                 option_key=option_key,
                 status_key=status_key,
-                ordered_at_key=ordered_at_key,
+                day_key=day_key,
                 amount_key=amount_key,
             )
             upserted = _upsert_daily_summary(

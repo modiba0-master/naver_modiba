@@ -1,5 +1,6 @@
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine.url import make_url
 
 
 class Settings(BaseSettings):
@@ -27,12 +28,32 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
-        url = str(value or "").strip()
+        url = str(value or "").strip().strip('"').strip("'")
         if url.startswith("mariadb://"):
-            return url.replace("mariadb://", "mysql+pymysql://", 1)
+            url = url.replace("mariadb://", "mysql+pymysql://", 1)
         if url.startswith("mysql://") and "pymysql" not in url:
-            return url.replace("mysql://", "mysql+pymysql://", 1)
+            url = url.replace("mysql://", "mysql+pymysql://", 1)
         return url
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def validate_database_url_parseable(cls, value: str) -> str:
+        if not value or value.startswith("sqlite"):
+            return value
+        if "${{" in value or "{{" in value:
+            raise ValueError(
+                "DATABASE_URL에 ${{...}} 참조가 그대로 들어가 있습니다. "
+                "Railway에서 치환된 완성 문자열을 넣거나, 로컬은 .env에 직접 값을 넣으세요."
+            )
+        try:
+            make_url(value)
+        except Exception as exc:
+            raise ValueError(
+                "DATABASE_URL을 SQLAlchemy가 파싱할 수 없습니다. "
+                "비밀번호에 @ : / # 등이 있으면 % 인코딩하고, 따옴표·줄바꿈이 섞이지 않았는지 확인하세요. "
+                f"원인: {exc}"
+            ) from exc
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,11 +1,14 @@
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Order
 from app.services.naver import fetch_naver_orders
+
+KST = ZoneInfo("Asia/Seoul")
 
 VALID_ORDER_STATUSES = {
     "신규주문",
@@ -42,26 +45,28 @@ def _parse_api_datetime(value: Any) -> datetime | None:
         return None
 
 
-def calculate_business_date(payment_date: datetime):
+def calculate_business_date(payment_date: datetime) -> date:
+    """
+    매출 귀속일(일자별 집계 키): 결제 시각을 한국시간(KST)으로 본 뒤
+    당일 00:00~15:59 → 그날, 16:00 이후 → 익일.(요일·주말 별도 귀속 없음)
+    """
+    if payment_date.tzinfo is None:
+        local = payment_date.replace(tzinfo=KST)
+    else:
+        local = payment_date.astimezone(KST)
     cutoff = time(hour=16, minute=0)
-    weekday = payment_date.weekday()  # Monday=0 ... Sunday=6
-
-    if weekday == 5:  # Saturday -> Monday
-        return payment_date.date() + timedelta(days=2)
-    if weekday == 6:  # Sunday -> Monday
-        return payment_date.date() + timedelta(days=1)
-
-    if payment_date.time() < cutoff:
-        return payment_date.date()
-
-    if weekday == 4:  # Friday 16:00+ -> next Monday
-        return payment_date.date() + timedelta(days=3)
-
-    return payment_date.date() + timedelta(days=1)
+    if local.time() < cutoff:
+        return local.date()
+    return local.date() + timedelta(days=1)
 
 
 def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
-    """동일 상품주문번호 재동기화 시 발주·발송·주문일시·상태만 보강한다."""
+    """동일 상품주문번호 재동기화 시 결제·발주·발송·주문일시·상태를 보강한다."""
+    pd_raw = payload.get("paymentDate")
+    if pd_raw:
+        payment_date = _parse_payment_date(str(pd_raw))
+        order.payment_date = payment_date
+        order.business_date = calculate_business_date(payment_date)
     od = _parse_api_datetime(payload.get("orderDate"))
     if od:
         order.ordered_at = od

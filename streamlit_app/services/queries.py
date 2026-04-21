@@ -4,20 +4,20 @@ import pandas as pd
 from sqlalchemy import Engine, text
 
 
-def _date_filter_sql(date_col: str = "payment_date") -> str:
+def _date_filter_sql(date_col: str = "business_date") -> str:
     return f"""
-    WHERE (:start_date IS NULL OR DATE({date_col}) >= :start_date)
-      AND (:end_date IS NULL OR DATE({date_col}) <= :end_date)
+    WHERE (:start_date IS NULL OR {date_col} >= :start_date)
+      AND (:end_date IS NULL OR {date_col} <= :end_date)
     """
 
 
 def get_main_kpis(engine: Engine, target_date: date) -> pd.DataFrame:
     query = text(
-        f"""
+        """
         SELECT
-            COALESCE(SUM(CASE WHEN DATE(payment_date) = :target_date THEN amount ELSE 0 END), 0) AS today_revenue,
-            COALESCE(SUM(CASE WHEN DATE(payment_date) = :target_date THEN 1 ELSE 0 END), 0) AS total_orders,
-            COALESCE(SUM(CASE WHEN DATE(payment_date) = :target_date THEN amount ELSE 0 END), 0) AS total_profit
+            COALESCE(SUM(CASE WHEN business_date = :target_date THEN amount ELSE 0 END), 0) AS today_revenue,
+            COALESCE(SUM(CASE WHEN business_date = :target_date THEN 1 ELSE 0 END), 0) AS total_orders,
+            COALESCE(SUM(CASE WHEN business_date = :target_date THEN amount ELSE 0 END), 0) AS total_profit
         FROM orders
         WHERE payment_date IS NOT NULL
         """
@@ -32,7 +32,7 @@ def get_top_products(engine: Engine, target_date: date, limit: int = 5) -> pd.Da
             product_name,
             COALESCE(SUM(amount), 0) AS revenue
         FROM orders
-        WHERE DATE(payment_date) = :target_date
+        WHERE business_date = :target_date
         GROUP BY product_name
         ORDER BY revenue DESC
         LIMIT :limit_count
@@ -45,14 +45,14 @@ def get_product_analysis(engine: Engine, start_date: date | None, end_date: date
     query = text(
         f"""
         SELECT
-            DATE(payment_date) AS order_date,
+            business_date AS order_date,
             product_name,
             COUNT(*) AS orders,
             COALESCE(SUM(amount), 0) AS revenue,
             COALESCE(SUM(amount), 0) AS profit
         FROM orders
-        {_date_filter_sql("payment_date")}
-        GROUP BY DATE(payment_date), product_name
+        {_date_filter_sql("business_date")}
+        GROUP BY business_date, product_name
         ORDER BY order_date ASC, revenue DESC
         """
     )
@@ -72,7 +72,7 @@ def get_option_analysis(engine: Engine, start_date: date | None, end_date: date 
                 0
             ) AS cancel_count
         FROM orders
-        {_date_filter_sql("payment_date")}
+        {_date_filter_sql("business_date")}
         GROUP BY option_name
         ORDER BY orders DESC
         """
@@ -86,25 +86,26 @@ def get_option_analysis(engine: Engine, start_date: date | None, end_date: date 
 
 
 def get_time_analysis(engine: Engine, start_date: date | None, end_date: date | None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    # payment_date는 API(UTC) 기준이 저장된 경우가 많아 KST로 +9h 보정 후 시·요일 집계
     hour_query = text(
         f"""
         SELECT
-            HOUR(payment_date) AS hour_of_day,
+            HOUR(DATE_ADD(payment_date, INTERVAL 9 HOUR)) AS hour_of_day,
             COUNT(*) AS orders
         FROM orders
-        {_date_filter_sql("payment_date")}
-        GROUP BY HOUR(payment_date)
+        {_date_filter_sql("business_date")}
+        GROUP BY HOUR(DATE_ADD(payment_date, INTERVAL 9 HOUR))
         ORDER BY hour_of_day
         """
     )
     weekday_query = text(
         f"""
         SELECT
-            WEEKDAY(DATE(payment_date)) AS weekday_num,
+            WEEKDAY(DATE(DATE_ADD(payment_date, INTERVAL 9 HOUR))) AS weekday_num,
             COUNT(*) AS orders
         FROM orders
-        {_date_filter_sql("payment_date")}
-        GROUP BY WEEKDAY(DATE(payment_date))
+        {_date_filter_sql("business_date")}
+        GROUP BY WEEKDAY(DATE(DATE_ADD(payment_date, INTERVAL 9 HOUR)))
         ORDER BY weekday_num
         """
     )

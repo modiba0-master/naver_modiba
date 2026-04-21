@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.aggregation_display import format_kst_sales_window
 from app.models import Order
 from app.schemas import OrderRawItem, OrdersByDateItem
 from app.services.sync import is_valid_order_status, normalize_order_status
@@ -17,7 +18,7 @@ def get_orders_by_date(
     grouped: dict[date, dict[str, Decimal | int]] = {}
 
     for item in raw_items:
-        day = item.date  # 결제일(달력) 기준 일별 KPI
+        day = item.date  # 매출 귀속일(KST 결제 16:00 컷오프) = business_date
         if day not in grouped:
             grouped[day] = {
                 "total_amount": Decimal(0),
@@ -35,27 +36,12 @@ def get_orders_by_date(
         results.append(
             OrdersByDateItem(
                 order_date=day,
+                aggregation_window_kst=format_kst_sales_window(day),
                 total_amount=Decimal(grouped[day]["total_amount"]),
                 total_quantity=int(grouped[day]["total_quantity"]),
             )
         )
     return results
-
-
-def _parse_order_day(raw_value: str | date) -> date:
-    if isinstance(raw_value, date):
-        return raw_value
-    return date.fromisoformat(raw_value)
-
-
-def _to_date(dt):
-    if not dt:
-        return None
-    if isinstance(dt, datetime):
-        return dt.isoformat().split("T")[0]
-    if isinstance(dt, date):
-        return dt.isoformat().split("T")[0]
-    return str(dt).split("T")[0]
 
 
 def get_orders_raw(
@@ -71,11 +57,11 @@ def get_orders_raw(
         if not is_valid_order_status(normalized_status):
             continue
 
-        pay_day = row.payment_date.date()
+        bd = row.business_date
 
-        if start_date and pay_day < start_date.date():
+        if start_date and bd < start_date.date():
             continue
-        if end_date and pay_day > end_date.date():
+        if end_date and bd > end_date.date():
             continue
 
         order_id = row.order_id
@@ -83,26 +69,12 @@ def get_orders_raw(
             continue
         seen_orders.add(order_id)
 
-        item: dict = {
-            "payment_date": row.payment_date,
-            "date": row.order_date,
-        }
-        payment_date = item.get("payment_date")
-        order_date = item.get("date")
-
-        business_date = _to_date(payment_date)
-        if not business_date:
-            business_date = _to_date(order_date)
-
-        item["business_date"] = business_date
-
-        bd_str = item["business_date"]
+        item: dict = {}
         item["order_id"] = row.order_id
         item["content_order_no"] = row.content_order_no
-        item["date"] = pay_day
-        item["business_date"] = (
-            date.fromisoformat(bd_str) if bd_str else row.payment_date.date()
-        )
+        item["date"] = bd
+        item["business_date"] = bd
+        item["aggregation_window_kst"] = format_kst_sales_window(bd)
         item["order_calendar_date"] = row.order_date
         item["payment_date"] = row.payment_date
         item["ordered_at"] = row.ordered_at
