@@ -1,6 +1,6 @@
 import logging
 from collections import Counter
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -31,22 +31,38 @@ def is_valid_order_status(value: str) -> bool:
     return normalize_order_status(value) in VALID_ORDER_STATUSES
 
 
-def _parse_payment_date(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+def to_kst_naive(dt: datetime) -> datetime:
+    """DB 저장용 KST naive. naive는 네이버가 이미 KST로 준 벽시계로 간주(변환 없음).
+
+    timezone-aware(UTC·+09:00 등)는 Asia/Seoul 로 변환한 뒤 tzinfo 제거.
+    """
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(KST).replace(tzinfo=None)
 
 
-def _payment_date_for_db(payment_date: datetime) -> datetime:
-    """DB 컬럼은 timezone 없이 보관. 네이버 API에서 파싱한 순간을 KST 벽시계로만 저장(+9를 별도로 더하지 않음)."""
-    if payment_date.tzinfo is None:
-        return payment_date
-    return payment_date.astimezone(KST).replace(tzinfo=None)
+def parse_payment_datetime_string(value: str) -> datetime:
+    """`paymentDate` 문자열 파싱 후 KST naive (`payment_date` 컬럼에 저장)."""
+    s = str(value).strip()
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return to_kst_naive(dt)
+
+
+def calculate_business_date(payment_dt: datetime) -> date:
+    """영업일: KST 기준 00:00~15:59 → 같은 날, 16:00~23:59 → 다음 날.
+
+    동기화(및 `recompute_business_dates`)에서만 계산. 집계는 저장된 `business_date`만 사용.
+    """
+    dt = to_kst_naive(payment_dt)
+    if dt.hour >= 16:
+        dt = dt + timedelta(days=1)
+    return dt.date()
 
 
 def _api_datetime_for_db(value: datetime | None) -> datetime | None:
-    """주문일시·발주·발송 등 API 시각을 payment_date와 동일 규칙(KST naive)으로 저장."""
     if value is None:
         return None
-    return _payment_date_for_db(value)
+    return to_kst_naive(value)
 
 
 def _parse_api_datetime(value: Any) -> datetime | None:
@@ -63,30 +79,13 @@ def _parse_api_datetime(value: Any) -> datetime | None:
         return None
 
 
-def calculate_business_date(payment_date: datetime) -> date:
-    """
-    매출 귀속일(일자별 집계 키): 결제 시각을 한국시간(KST)으로 본 뒤
-    당일 00:00~15:59 → 그날, 16:00 이후 → 익일.(요일·주말 별도 귀속 없음)
-
-    DB에 넣을 때는 naive를 KST 벽시계로 둠(`_payment_date_for_db`). naive인 경우 그 값을 KST로 해석한다.
-    """
-    if payment_date.tzinfo is None:
-        local = payment_date.replace(tzinfo=KST)
-    else:
-        local = payment_date.astimezone(KST)
-    cutoff = time(hour=16, minute=0)
-    if local.time() < cutoff:
-        return local.date()
-    return local.date() + timedelta(days=1)
-
-
 def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
     """동일 상품주문번호 재동기화 시 결제·발주·발송·주문일시·상태를 보강한다."""
     pd_raw = payload.get("paymentDate")
     if pd_raw:
-        payment_date = _parse_payment_date(str(pd_raw))
-        order.payment_date = _payment_date_for_db(payment_date)
-        order.business_date = calculate_business_date(payment_date)
+        payment_stored = parse_payment_datetime_string(str(pd_raw))
+        order.payment_date = payment_stored
+        order.business_date = calculate_business_date(payment_stored)
     od = _parse_api_datetime(payload.get("orderDate"))
     if od:
         order.ordered_at = _api_datetime_for_db(od)
@@ -108,8 +107,8 @@ def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
 def sync_orders(db: Session) -> int:
     """네이버에서 상품주문 단위 목록을 가져와 DB에 반영한다.
 
-    - `order_id`는 네이버 **상품주문번호**(productOrderId). DB에 없으면 신규 INSERT, 있으면 타임라인만 merge.
-    - 반환값은 이번 호출에서 **새로 INSERT된 행 수**(기존 행 갱신은 포함하지 않음).
+    - `order_id`는 네이버 **상품주문번호**(productOrderId). DB에 없으면 신규 Insert, 있으면 타임라인만 merge.
+    - 반환값은 이번 호출에서 **새로 Insert된 행 수**(기존 행 갱신은 포함하지 않음).
     """
     payloads = fetch_naver_orders()
     inserted_count = 0
@@ -143,12 +142,11 @@ def sync_orders(db: Session) -> int:
             skipped_missing_payment += 1
             continue
         try:
-            payment_date = _parse_payment_date(str(raw_pd))
+            payment_stored = parse_payment_datetime_string(str(raw_pd))
         except ValueError:
             skipped_missing_payment += 1
             continue
-        business_date = calculate_business_date(payment_date)
-        payment_stored = _payment_date_for_db(payment_date)
+        business_date = calculate_business_date(payment_stored)
         ordered_at = _api_datetime_for_db(_parse_api_datetime(payload.get("orderDate")))
         placed_order_at = _api_datetime_for_db(
             _parse_api_datetime(payload.get("placeOrderDate"))

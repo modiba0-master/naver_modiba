@@ -24,6 +24,7 @@ class Order(Base):
     receiver_name: Mapped[str] = mapped_column(String(120))
     address: Mapped[str] = mapped_column(String(255))
     order_status: Mapped[str] = mapped_column(String(50), default="신규주문")
+    # 실제 결제 이벤트 시각(KST naive). 매출 집계는 `business_date`만 사용(DATE(payment_date) 금지).
     payment_date: Mapped[datetime] = mapped_column(DateTime)
     order_date: Mapped[date] = mapped_column(Date, index=True)
     business_date: Mapped[date] = mapped_column(Date, index=True)

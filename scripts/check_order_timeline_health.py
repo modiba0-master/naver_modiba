@@ -2,8 +2,7 @@
 """
 orders 테이블의 주문일시·결제·발주·발송 시각 일관성 점검.
 
-- 동기화는 `app/services/sync.py`에서 API ISO 문자열을 파싱한 뒤, 결제일시와 동일하게
-  **KST 벽시계 naive**로 저장하는 것이 정상(최신 코드 기준).
+- 동기화는 `app/services/sync.py`에서 API ISO를 **KST naive로 정규화**해 저장하는 것이 정상(UTC·`Z`는 KST로 변환).
 - 같은 결제 시각이 여러 행: **같은 주문번호(장바구니)에 상품줄이 여러 개**이면 정상.
 
 사용:
@@ -73,7 +72,7 @@ def main() -> int:
         print("orders 행이 없습니다.")
         return 0
 
-    # --- 이상 집계 (naive KST 벽시계끼리 비교) ---
+    # --- 이상 집계 (DB 저장 시각끼리 비교) ---
     ordered_way_after_pay = 0  # 주문일시가 결제보다 이틀 이상 늦음
     pay_before_order_suspicious = 0  # 결제가 주문보다 1시간 이상 앞섬
     place_after_ship = 0  # 발주가 발송보다 늦음

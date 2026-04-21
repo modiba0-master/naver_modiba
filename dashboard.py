@@ -16,6 +16,12 @@ from streamlit_app.services.kpi_from_filtered import (
     expected_sales_from_recent_7d,
     kpi_aggregate,
 )
+from streamlit_app.services.kpi_ui import (
+    add_avg_ticket_to_daily,
+    append_daily_total_row,
+    render_kpi_period_header,
+    render_seller_db_tips_expander,
+)
 
 DEFAULT_API_BASE_URL = "https://web-production-0001b.up.railway.app"
 REQUIRED_COLUMNS = [
@@ -42,7 +48,7 @@ def _format_sales_date_label(d: date) -> str:
 
 
 def _aggregate_kpi_daily(kpi_daily_table: pd.DataFrame) -> pd.DataFrame:
-    """매출 집계일별 주문금액·건수·수량 합계 (`date` = API business_date, 백엔드 KST 16시 경계)."""
+    """매출 집계일별 주문금액·건수·수량 합계 (`date` = 저장된 `business_date`)."""
     if kpi_daily_table.empty:
         return pd.DataFrame(
             columns=[
@@ -157,7 +163,7 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
             df[col] = ""
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    # 결제일시: API/DB에 저장된 값 그대로(+9h 등 별도 보정 없음). 매출 집계일은 `date`(business_date) 사용.
+    # 결제일시: DB는 KST naive(UTC 등은 동기화 시 변환됨). 매출 집계는 `date`(business_date)만 사용.
     df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
@@ -275,12 +281,12 @@ def main_content() -> None:
     default_start = default_end - timedelta(days=6)
 
     st.markdown("## KPI 영역")
-    with st.expander("일시·매출 집계 기준 (DB / API)", expanded=False):
+    with st.expander("일시·매출 집계 기준 (네이버 API → DB)", expanded=False):
         st.markdown(
             """
-1. **결제일시·주문일시** — 네이버 API 동기화 시 파싱 후 DB에는 **KST 벽시계(naive)** 로 저장합니다. (`app.services.sync`)
-2. **매출 집계일** — API의 `date` / DB `business_date`와 동일합니다. 결제 시각(KST) **당일 00:00~15:59 → 그날**, **16:00 이후 → 익일**로 집계일이 정해지며, **시간대 분석·요일과 같은 16시 경계**로 일자별 매출을 맞춥니다.
-3. **일자 불일치 시** — 과거 데이터만 어긋나면 서버에서 `python scripts/recompute_business_dates.py` 로 `business_date`를 재계산할 수 있습니다.
+1. **결제일시(`payment_date`)** — 네이버 API ISO8601. **이미 KST인 naive `YYYY-MM-DD HH:MM:SS`는 그대로** 저장합니다. **UTC(`Z`)·타임존 있음**은 KST로 변환한 뒤 naive로 저장합니다. (`app.services.sync`: `parse_payment_datetime_string` / `to_kst_naive`)
+2. **매출 집계일(`business_date`)** — KST 결제 시각 기준 **00:00~15:59 → 당일, 16:00~23:59 → 익일** 영업일. 동기화 시에만 계산하며, **집계·필터는 항상 `business_date` 컬럼만** 사용합니다 (`DATE(payment_date)` 금지).
+3. **불일치 시** — 서버에서 `python scripts/recompute_business_dates.py` 로 `business_date`만 재맞춤합니다.
             """.strip()
         )
     kpi_col1, kpi_col2 = st.columns(2)
@@ -298,24 +304,31 @@ def main_content() -> None:
         )
 
     st.caption(
-        "KPI는 **매출 집계일**(`business_date`) 기준입니다. 결제·시간대 차트와 동일한 KST **16시 경계**로 일자가 나뉩니다."
+        "KPI는 **영업일**(`business_date`, 16:00 KST 컷) 기준입니다. 실제 결제 시각은 `payment_date`를 보세요."
     )
 
     if kpi_start_date > kpi_end_date:
         st.error("KPI 시작일은 KPI 종료일보다 클 수 없습니다.")
         st.stop()
 
-    kpi_mask = (order_df["date"].dt.date >= kpi_start_date) & (order_df["date"].dt.date <= kpi_end_date)
-    kpi_filtered_df = order_df.loc[kpi_mask].copy()
+    kpi_mask = (
+        (order_df["date"].dt.date >= kpi_start_date)
+        & (order_df["date"].dt.date <= kpi_end_date)
+    )
+    kpi_filtered_df = order_df[kpi_mask].copy()
     if kpi_filtered_df.empty:
-        st.warning("선택한 KPI 기간에 해당하는 주문이 없습니다.")
+        st.warning("선택한 KPI 조건에 맞는 데이터가 없습니다.")
         st.stop()
 
     period_days = (kpi_end_date - kpi_start_date).days + 1
     prev_start = kpi_start_date - timedelta(days=period_days)
     prev_end = kpi_end_date - timedelta(days=period_days)
-    prev_mask = (order_df["date"].dt.date >= prev_start) & (order_df["date"].dt.date <= prev_end)
-    prev_df = order_df.loc[prev_mask].copy()
+    prev_mask = (
+        (order_df["date"].dt.date >= prev_start)
+        & (order_df["date"].dt.date <= prev_end)
+    )
+    prev_df = order_df[prev_mask].copy()
+
     compare_prev = not prev_df.empty
     whole = kpi_aggregate(kpi_filtered_df)
     prev_m = kpi_aggregate(prev_df)
@@ -327,39 +340,61 @@ def main_content() -> None:
             return None
         return f"{delta_rate(curr, base):.1f}%"
 
-    st.subheader("KPI Metric")
     compare_info = f"vs {prev_start}~{prev_end}"
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric(
-        f"기간 주문 금액 ({compare_info})",
-        f"{whole['total_amount']:,.0f}원",
-        _prev_delta(whole["total_amount"], prev_m["total_amount"]),
-    )
-    kpi2.metric(
-        f"주문 건수 ({compare_info})",
-        f"{int(whole['order_count']):,}",
-        _prev_delta(whole["order_count"], prev_m["order_count"]),
-    )
-    kpi3.metric(
-        f"판매 수량 합계 ({compare_info})",
-        f"{whole['total_quantity']:,.0f}",
-        _prev_delta(whole["total_quantity"], prev_m["total_quantity"]),
-    )
-    kpi4.metric(
-        f"고객 수 ({compare_info})",
-        f"{int(whole['customer_count']):,}",
-        _prev_delta(whole["customer_count"], prev_m["customer_count"]),
-    )
-    st.metric(
-        f"최근7일 평균 일매출 ({compare_info})",
-        f"{expected_sales:,.0f}원",
-        _prev_delta(expected_sales, prev_expected_sales),
-    )
+
+    with st.container(border=True):
+        st.markdown("### 주문·매출 KPI")
+        render_kpi_period_header(
+            kpi_start_date, kpi_end_date, period_days, whole
+        )
+        r1a, r1b, r1c, r1d = st.columns(4)
+        r1a.metric(
+            f"기간 주문 금액 ({compare_info})",
+            f"{whole['total_amount']:,.0f}원",
+            _prev_delta(whole["total_amount"], prev_m["total_amount"]),
+        )
+        r1b.metric(
+            f"상품주문 건수 ({compare_info})",
+            f"{int(whole['order_count']):,}",
+            _prev_delta(whole["order_count"], prev_m["order_count"]),
+            help="네이버 API 기준 상품주문번호(줄) 단위 건수입니다.",
+        )
+        r1c.metric(
+            f"판매 수량 합계 ({compare_info})",
+            f"{whole['total_quantity']:,.0f}",
+            _prev_delta(whole["total_quantity"], prev_m["total_quantity"]),
+        )
+        r1d.metric(
+            f"고객 수 ({compare_info})",
+            f"{int(whole['customer_count']):,}",
+            _prev_delta(whole["customer_count"], prev_m["customer_count"]),
+        )
+        r2a, r2b, r2c = st.columns(3)
+        r2a.metric(
+            f"기간 평균 객단가 ({compare_info})",
+            f"{whole['avg_order_value']:,.0f}원",
+            _prev_delta(whole["avg_order_value"], prev_m["avg_order_value"]),
+            help="기간 주문 금액 ÷ 상품주문 건수.",
+        )
+        r2b.metric(
+            f"최근7일 평균 일매출 ({compare_info})",
+            f"{expected_sales:,.0f}원",
+            _prev_delta(expected_sales, prev_expected_sales),
+            help="선택 기간 내 일자별 매출의 최근 7일 평균.",
+        )
+        r2c.metric(
+            "선택 일수",
+            f"{period_days}일",
+            None,
+        )
+
+    render_seller_db_tips_expander()
 
     st.markdown("")
-    st.subheader("KPI 일자 테이블 (최근 7일, 일자별 매출)")
+    st.subheader("최근 7일 일자별 매출")
     st.caption(
-        "행별 금액은 해당 **매출 집계일**에 합산된 주문만 포함합니다. 상세 주문 표의 「매출집계구간」은 동일 일자의 16:00 구간 안내용입니다."
+        "네이버에서 불러온 주문을 **매출 집계일**로 묶은 금액입니다. "
+        "상세 주문 표의 「매출집계일 안내」는 같은 집계일을 설명하는 문구입니다."
     )
     kpi_daily_start = default_end - timedelta(days=6)
     kpi_daily_mask = (
@@ -376,27 +411,30 @@ def main_content() -> None:
     for col in ("total_amount", "total_quantity"):
         daily_kpi[col] = pd.to_numeric(daily_kpi[col], errors="coerce").fillna(0.0)
     daily_kpi["order_count"] = daily_kpi["order_count"].fillna(0).astype(int)
+    daily_kpi = add_avg_ticket_to_daily(daily_kpi)
     daily_kpi["date_label"] = daily_kpi["date"].map(_format_sales_date_label)
     daily_kpi = daily_kpi.sort_values("date", ascending=False)
+
+    chart_for_plot = daily_kpi.sort_values("date", ascending=True)
+    if not chart_for_plot.empty:
+        st.caption("일자별 주문 금액 (막대)")
+        st.bar_chart(
+            chart_for_plot.set_index("date_label")[["total_amount"]],
+            use_container_width=True,
+            height=260,
+        )
+
     daily_kpi = daily_kpi[
         [
             "date_label",
             "total_amount",
+            "avg_ticket",
             "order_count",
             "total_quantity",
         ]
     ]
-    total_row = pd.DataFrame(
-        [
-            {
-                "date_label": "합계",
-                "total_amount": daily_kpi["total_amount"].sum(),
-                "order_count": int(daily_kpi["order_count"].sum()),
-                "total_quantity": daily_kpi["total_quantity"].sum(),
-            }
-        ]
-    )
-    daily_kpi = pd.concat([daily_kpi, total_row], ignore_index=True)
+    daily_kpi = append_daily_total_row(daily_kpi)
+
     show_data_grid(daily_kpi)
 
     st.markdown("---")

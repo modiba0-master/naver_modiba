@@ -1,7 +1,7 @@
 """orders.business_date 재계산.
 
-- DB `payment_date`는 KST 벽시계(naive) 또는 API에서 파싱한 시각을 그대로 쓰는 것을 전제로,
-  `calculate_business_date` 규칙에 맞게 매출 집계일(`business_date`)만 다시 맞춘다.
+- DB `payment_date`는 KST naive 결제 시각을 전제로,
+  `calculate_business_date`(16:00 KST 영업일 컷)로 `business_date`만 다시 맞춘다.
 - 동일 결제 시각이 여러 행에 보이는 것은 **손상이 아니라**, 같은 주문번호(장바구니)에 상품줄이
   여러 개일 때 결제 시각이 복제되는 정상 동작이다.
 

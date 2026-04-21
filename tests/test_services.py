@@ -1,31 +1,40 @@
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from app.models import Order
-from app.services.sync import calculate_business_date, sync_orders
+from app.services.sync import (
+    calculate_business_date,
+    parse_payment_datetime_string,
+    sync_orders,
+    to_kst_naive,
+)
 
 
-def test_calculate_business_date_kst_cutoff_no_weekend_roll():
-    assert calculate_business_date(datetime(2026, 4, 14, 15, 59)).isoformat() == "2026-04-14"  # before 16 KST
-    assert calculate_business_date(datetime(2026, 4, 14, 16, 0)).isoformat() == "2026-04-15"  # after 16 -> next day
-    assert calculate_business_date(datetime(2026, 4, 17, 16, 0)).isoformat() == "2026-04-18"  # Fri after 16 -> Sat
-    assert calculate_business_date(datetime(2026, 4, 18, 10, 0)).isoformat() == "2026-04-18"  # Sat before 16
-    assert calculate_business_date(datetime(2026, 4, 18, 16, 0)).isoformat() == "2026-04-19"  # Sat after 16 -> Sun
-    assert calculate_business_date(datetime(2026, 4, 19, 10, 0)).isoformat() == "2026-04-19"  # Sun before 16
-    # UTC 2026-04-14 07:00Z = KST 16:00 -> 익일
-    assert (
-        calculate_business_date(
-            datetime(2026, 4, 14, 7, 0, tzinfo=ZoneInfo("UTC"))
-        ).isoformat()
-        == "2026-04-15"
+def test_calculate_business_date_16h_cutoff_kst_naive():
+    assert calculate_business_date(datetime(2026, 4, 21, 15, 0)) == date(2026, 4, 21)
+    assert calculate_business_date(datetime(2026, 4, 21, 15, 59)) == date(2026, 4, 21)
+    assert calculate_business_date(datetime(2026, 4, 21, 16, 0)) == date(2026, 4, 22)
+    assert calculate_business_date(datetime(2026, 4, 21, 23, 59)) == date(2026, 4, 22)
+
+
+def test_calculate_business_date_utc_normalizes_to_kst_first():
+    # 2026-04-14 07:00 UTC = 2026-04-14 16:00 KST → next business day
+    assert calculate_business_date(datetime(2026, 4, 14, 7, 0, tzinfo=ZoneInfo("UTC"))) == date(
+        2026, 4, 15
     )
-    assert (
-        calculate_business_date(
-            datetime(2026, 4, 14, 6, 59, 59, tzinfo=ZoneInfo("UTC"))
-        ).isoformat()
-        == "2026-04-14"
+
+
+def test_to_kst_naive_and_parse_payment_string():
+    assert to_kst_naive(datetime(2026, 4, 21, 15, 30, 0)) == datetime(2026, 4, 21, 15, 30, 0)
+    assert parse_payment_datetime_string("2026-04-21 15:30:00") == datetime(
+        2026, 4, 21, 15, 30, 0
+    )
+    # 06:00 UTC = 15:00 KST same calendar day → business_date still 2026-04-21
+    assert parse_payment_datetime_string("2026-04-21T06:00:00Z") == datetime(2026, 4, 21, 15, 0, 0)
+    assert parse_payment_datetime_string("2026-04-21T15:00:00+09:00") == datetime(
+        2026, 4, 21, 15, 0, 0
     )
 
 
@@ -54,6 +63,7 @@ def test_sync_orders_inserts_data(db_session, monkeypatch):
     row = db_session.scalar(select(Order).where(Order.order_id == "MOCK-001"))
     assert row is not None
     assert row.content_order_no == "2026041870238181"
+    assert row.business_date == date(2026, 1, 1)
 
 
 def test_sync_orders_merges_place_and_ship_times(db_session, monkeypatch):

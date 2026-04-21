@@ -173,7 +173,7 @@ def generate_daily_summary(batch_size: int = 5000, upsert_chunk_size: int = 2000
     Read orders from MariaDB and upsert grouped daily summary.
 
     Group key:
-      - business_date (매출 귀속일, KST 결제 16:00 컷오프; 컬럼 없으면 payment_date 날짜)
+      - business_date (영업일, 16:00 KST 규칙; 컬럼 없으면 레거시 호환으로 payment_date 일자)
       - product_id
       - option_id
 

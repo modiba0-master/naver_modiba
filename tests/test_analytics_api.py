@@ -36,7 +36,7 @@ def test_analytics_endpoints(client, db_session, monkeypatch):
     assert "order_calendar_date" in first
     assert "date" in first
     assert "aggregation_window_kst" in first
-    assert "2026-01-02" in first["aggregation_window_kst"] or "16:00" in first["aggregation_window_kst"]
+    assert "2026-01-02" in first["aggregation_window_kst"]
 
     margin_response = client.get("/analytics/margin")
     assert margin_response.status_code == 200

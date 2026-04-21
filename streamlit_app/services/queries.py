@@ -5,7 +5,7 @@ from sqlalchemy import Engine, text
 
 
 def _hour_sql(dialect: str) -> str:
-    """payment_date는 KST 벽시계(naive)로 저장한다고 보고 시(hour)만 추출(+9 보정 없음)."""
+    """payment_date에서 시(hour)만 추출(DB 값 그대로)."""
     if dialect == "sqlite":
         return "CAST(strftime('%H', payment_date) AS INTEGER)"
     if dialect == "postgresql":

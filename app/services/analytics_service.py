@@ -18,7 +18,7 @@ def get_orders_by_date(
     grouped: dict[date, dict[str, Decimal | int]] = {}
 
     for item in raw_items:
-        day = item.date  # 매출 귀속일(KST 결제 16:00 컷오프) = business_date
+        day = item.date  # 매출 집계일 = business_date (저장 컬럼만 사용)
         if day not in grouped:
             grouped[day] = {
                 "total_amount": Decimal(0),

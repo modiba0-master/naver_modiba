@@ -1,4 +1,4 @@
-"""매출 귀속일(business_date) ↔ KST 집계 구간 표시.
+"""매출 집계일(`business_date`) 표시.
 
 `app/aggregation_display.py`와 동일한 로직. 대시보드만 배포(streamlit_app 루트)할 때
 상위 `app/` 패키지 없이 동작하도록 복제해 둔다 — 변경 시 양쪽을 맞출 것.
@@ -7,27 +7,22 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
-
-KST = ZoneInfo("Asia/Seoul")
 
 
 def kst_sales_window_for_business_date(business_day: date) -> tuple[datetime, datetime]:
-    """집계 귀속일 D에 매출이 묶이는 결제 시각(KST) 구간 (시작 포함, 끝 제외)."""
-    end_exclusive = datetime.combine(business_day, time(16, 0), tzinfo=KST)
-    start_inclusive = end_exclusive - timedelta(days=1)
-    return start_inclusive, end_exclusive
+    """영업일 `business_day`에 귀속되는 결제 시각(KST naive) 닫힌 구간 [start, end]."""
+    start = datetime.combine(business_day - timedelta(days=1), time(16, 0, 0))
+    end = datetime.combine(business_day, time(15, 59, 59))
+    return start, end
 
 
 def format_kst_sales_window(business_day: date) -> str:
-    """예: 2026-04-20 16:00 ~ 2026-04-21 16:00 (KST)"""
-    start, end_excl = kst_sales_window_for_business_date(business_day)
+    """상세 표용 안내: 영업일과 실제 결제 시각 구간(16:00 컷)."""
     return (
-        f"{start.strftime('%Y-%m-%d %H:%M')} ~ "
-        f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
+        f"{business_day.isoformat()} (영업일: 전일 16:00~당일 15:59 KST 결제 → DB business_date)"
     )
 
 
 def format_kpi_daily_table_window_kst(business_day: date) -> str:
-    """KPI 일자 테이블: `app/aggregation_display.py` 와 동일 — 매일 전일 16:00 ~ 당일 16:00 (KST)."""
+    """`format_kst_sales_window`와 동일."""
     return format_kst_sales_window(business_day)
