@@ -50,6 +50,11 @@ COLUMN_MAP: dict[str, str] = {
 }
 
 COLUMN_DISPLAY_ORDER: list[str] = [
+    "귀속일(달력)",
+    "주문금액",
+    "주문수량",
+    "총 수량",
+    "매출집계구간(KST)",
     "날자",
     "상품주문번호",
     "주문번호",

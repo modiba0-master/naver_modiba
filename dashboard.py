@@ -8,7 +8,7 @@ import httpx
 import pandas as pd
 import streamlit as st
 
-from app.aggregation_display import format_kst_sales_window
+from app.aggregation_display import format_kpi_daily_table_window_kst, format_kst_sales_window
 
 from streamlit_app.services.data_grid import show_data_grid
 from streamlit_app.services.kpi_from_filtered import (
@@ -324,30 +324,40 @@ def main_content() -> None:
     )
     kpi_daily_table = order_df[kpi_daily_mask].copy()
     kpi_daily_table["date"] = kpi_daily_table["date"].dt.date
-    daily_kpi = (
-        kpi_daily_table.groupby("date", as_index=False)
-        .agg(
-            order_count=(
-                "order_id",
-                lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
-            ),
-            total_amount=("amount", "sum"),
-            total_quantity=("quantity", "sum"),
-        )
-        .sort_values("date", ascending=False)
+    daily_kpi = kpi_daily_table.groupby("date", as_index=False).agg(
+        order_count=(
+            "order_id",
+            lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
+        ),
+        total_amount=("amount", "sum"),
+        total_quantity=("quantity", "sum"),
     )
-    daily_kpi["aggregation_window_kst"] = daily_kpi["date"].map(format_kst_sales_window)
+    cal = pd.DataFrame(
+        {"date": pd.date_range(kpi_daily_start, default_end, freq="D").date}
+    )
+    daily_kpi = cal.merge(daily_kpi, on="date", how="left")
+    daily_kpi["order_count"] = daily_kpi["order_count"].fillna(0).astype(int)
+    daily_kpi["total_amount"] = pd.to_numeric(
+        daily_kpi["total_amount"], errors="coerce"
+    ).fillna(0.0)
+    daily_kpi["total_quantity"] = pd.to_numeric(
+        daily_kpi["total_quantity"], errors="coerce"
+    ).fillna(0.0)
+    daily_kpi["aggregation_window_kst"] = daily_kpi["date"].map(
+        format_kpi_daily_table_window_kst
+    )
+    daily_kpi = daily_kpi.sort_values("date", ascending=False)
     daily_kpi = daily_kpi[
-        ["aggregation_window_kst", "date", "order_count", "total_amount", "total_quantity"]
+        ["date", "total_amount", "order_count", "total_quantity", "aggregation_window_kst"]
     ]
     total_row = pd.DataFrame(
         [
             {
-                "aggregation_window_kst": "—",
                 "date": "합계",
-                "order_count": daily_kpi["order_count"].sum(),
                 "total_amount": daily_kpi["total_amount"].sum(),
+                "order_count": int(daily_kpi["order_count"].sum()),
                 "total_quantity": daily_kpi["total_quantity"].sum(),
+                "aggregation_window_kst": "—",
             }
         ]
     )

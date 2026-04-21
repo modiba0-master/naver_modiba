@@ -30,3 +30,32 @@ def format_kst_sales_window(business_day: date) -> str:
         f"{start.strftime('%Y-%m-%d %H:%M')} ~ "
         f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
     )
+
+
+def format_kpi_daily_table_window_kst(business_day: date) -> str:
+    """KPI 일자 테이블 전용: 월요일은 한 줄(월요일 집계), 토요일은 토·일 구간 분리, 일요일은 일요일 한 줄."""
+    wd = business_day.weekday()  # 월=0 … 일=6
+    start, end_excl = kst_sales_window_for_business_date(business_day)
+    if wd == 0:
+        return (
+            f"월요일 집계: {start.strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
+        )
+    if wd == 5:
+        sun_bd = business_day + timedelta(days=1)
+        s2, e2 = kst_sales_window_for_business_date(sun_bd)
+        line_sat = (
+            f"토 귀속: {start.strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
+        )
+        line_sun = (
+            f"일 귀속: {s2.strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{e2.strftime('%Y-%m-%d %H:%M')} (KST)"
+        )
+        return line_sat + "\n" + line_sun
+    if wd == 6:
+        return (
+            f"일요일: {start.strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
+        )
+    return format_kst_sales_window(business_day)
