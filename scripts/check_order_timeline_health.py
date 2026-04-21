@@ -2,7 +2,7 @@
 """
 orders 테이블의 주문일시·결제·발주·발송 시각 일관성 점검.
 
-- 동기화는 `app/services/sync.py`에서 API ISO를 **KST naive로 정규화**해 저장하는 것이 정상(UTC·`Z`는 KST로 변환).
+- `payment_date`: API 원본 결제 시각(Z/오프셋은 KST naive로 통일). `business_date`: 그 시각에 16시 영업일 규칙 적용·저장.
 - 같은 결제 시각이 여러 행: **같은 주문번호(장바구니)에 상품줄이 여러 개**이면 정상.
 
 사용:

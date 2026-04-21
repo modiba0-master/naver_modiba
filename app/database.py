@@ -85,6 +85,9 @@ def ensure_orders_schema(bind_engine) -> None:
         ("refund_amount", "INTEGER NOT NULL DEFAULT 0"),
         ("cancel_amount", "INTEGER NOT NULL DEFAULT 0"),
         ("net_revenue", "INTEGER NOT NULL DEFAULT 0"),
+        ("order_datetime_raw", "VARCHAR(255) NOT NULL DEFAULT ''"),
+        ("payment_datetime_raw", "VARCHAR(255) NOT NULL DEFAULT ''"),
+        ("place_order_datetime_raw", "VARCHAR(255) NOT NULL DEFAULT ''"),
     ]
     for col, ddl in extra:
         if col not in names:

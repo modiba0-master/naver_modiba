@@ -12,16 +12,15 @@ from app.services.sync import (
 )
 
 
-def test_calculate_business_date_16h_cutoff_korea_wall_clock():
-    """한국시간 벽시계 기준 16:00 이상이면 익일 영업일."""
+def test_calculate_business_date_16h_cutoff_kst_wall_clock():
     assert calculate_business_date(datetime(2026, 4, 21, 15, 0)) == date(2026, 4, 21)
     assert calculate_business_date(datetime(2026, 4, 21, 15, 59)) == date(2026, 4, 21)
     assert calculate_business_date(datetime(2026, 4, 21, 16, 0)) == date(2026, 4, 22)
     assert calculate_business_date(datetime(2026, 4, 21, 23, 59)) == date(2026, 4, 22)
 
 
-def test_calculate_business_date_utc_converts_to_korea_time_first():
-    # 2026-04-14 07:00 UTC = 2026-04-14 16:00 한국시간 → 익일 영업일
+def test_calculate_business_date_utc_converts_to_kst_before_16h_cut():
+    # 2026-04-14 07:00 UTC = 2026-04-14 16:00 KST → 익일 영업일
     assert calculate_business_date(datetime(2026, 4, 14, 7, 0, tzinfo=ZoneInfo("UTC"))) == date(
         2026, 4, 15
     )
@@ -32,10 +31,14 @@ def test_to_kst_naive_and_parse_payment_string():
     assert parse_payment_datetime_string("2026-04-21 15:30:00") == datetime(
         2026, 4, 21, 15, 30, 0
     )
+    # Z: UTC 벽시각 naive 파싱 후 +9h → KST naive
     assert parse_payment_datetime_string("2026-04-21T06:00:00Z") == datetime(2026, 4, 21, 15, 0, 0)
+    assert parse_payment_datetime_string("2026-04-21T06:00:00z") == datetime(2026, 4, 21, 15, 0, 0)
     assert parse_payment_datetime_string("2026-04-21T15:00:00+09:00") == datetime(
         2026, 4, 21, 15, 0, 0
     )
+    assert parse_payment_datetime_string("") is None
+    assert parse_payment_datetime_string("   ") is None
 
 
 def test_sync_orders_inserts_data(db_session, monkeypatch):

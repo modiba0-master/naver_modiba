@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.aggregation_display import format_kst_sales_window
@@ -19,6 +19,13 @@ from app.services.sync import is_valid_order_status, normalize_order_status
 RevenueBasis = Literal["payment", "order", "shipping"]
 
 
+def get_db_order_stats(db: Session) -> tuple[int, datetime | None]:
+    """원장 건수와 최신 결제일시(대시보드에서 DB 반영 여부 확인용)."""
+    cnt = db.scalar(select(func.count()).select_from(Order))
+    last_pd = db.scalar(select(func.max(Order.payment_date)))
+    return int(cnt or 0), last_pd
+
+
 def _effective_business_date(row: Order, basis: RevenueBasis) -> date | None:
     if basis == "order":
         return row.order_business_date or row.payment_business_date or row.business_date
@@ -31,6 +38,19 @@ def _row_in_basis(row: Order, basis: RevenueBasis) -> bool:
     if basis == "shipping":
         return row.shipping_business_date is not None
     return True
+
+
+def _orders_raw_sql_date_column(basis: RevenueBasis):
+    """orders-raw 기간 필터: 결제 기준은 ``business_date`` 컬럼, 그 외는 ``_effective_business_date``와 동일한 coalesce."""
+    if basis == "order":
+        return func.coalesce(
+            Order.order_business_date,
+            Order.payment_business_date,
+            Order.business_date,
+        )
+    if basis == "shipping":
+        return Order.shipping_business_date
+    return Order.business_date
 
 
 def get_orders_by_date(
@@ -81,6 +101,15 @@ def get_orders_raw(
     revenue_basis: RevenueBasis = "payment",
 ) -> list[OrderRawItem]:
     stmt = select(Order).order_by(Order.payment_date.desc())
+    col = _orders_raw_sql_date_column(revenue_basis)
+    if start_date is not None and end_date is not None:
+        stmt = stmt.where(
+            col.between(start_date.date(), end_date.date()),
+        )
+    elif start_date is not None:
+        stmt = stmt.where(col >= start_date.date())
+    elif end_date is not None:
+        stmt = stmt.where(col <= end_date.date())
 
     rows = db.scalars(stmt).all()
     seen_orders: set[str] = set()
@@ -95,11 +124,6 @@ def get_orders_raw(
 
         bd = _effective_business_date(row, revenue_basis)
         if bd is None:
-            continue
-
-        if start_date and bd < start_date.date():
-            continue
-        if end_date and bd > end_date.date():
             continue
 
         order_id = row.order_id
@@ -125,6 +149,9 @@ def get_orders_raw(
         item["ordered_at"] = row.ordered_at
         item["placed_order_at"] = row.placed_order_at
         item["shipped_at"] = row.shipped_at
+        item["order_datetime_raw"] = getattr(row, "order_datetime_raw", "") or ""
+        item["payment_datetime_raw"] = getattr(row, "payment_datetime_raw", "") or ""
+        item["place_order_datetime_raw"] = getattr(row, "place_order_datetime_raw", "") or ""
         item["buyer_name"] = row.buyer_name
         item["buyer_id"] = row.buyer_id
         item["receiver_name"] = row.receiver_name

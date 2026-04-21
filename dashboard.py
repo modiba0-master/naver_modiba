@@ -118,6 +118,14 @@ def fetch_order_data(base_url: str, revenue_basis: str = "payment") -> pd.DataFr
     return pd.DataFrame(items)
 
 
+@st.cache_data(ttl=15)
+def fetch_db_stats(base_url: str) -> dict[str, object]:
+    url = base_url.rstrip("/")
+    r = httpx.get(f"{url}/analytics/db-stats", timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
 def _normalize_api_column_name(name: object) -> str:
     text = str(name).strip()
     text = re.sub(r"(?<!^)(?=[A-Z])", "_", text)
@@ -192,6 +200,9 @@ def _require_login() -> bool:
 
         if password == actual_password and actual_password is not None:
             st.session_state.authenticated = True
+            st.session_state["_refresh_orders_after_login"] = True
+            fetch_order_data.clear()
+            fetch_db_stats.clear()
             st.rerun()
         else:
             st.error("비밀번호가 틀렸습니다.")
@@ -201,6 +212,10 @@ def _require_login() -> bool:
 
 
 def main_content() -> None:
+    if st.session_state.pop("_refresh_orders_after_login", False):
+        fetch_order_data.clear()
+        fetch_db_stats.clear()
+
     st_autorefresh(interval=60000, key="naver_modiba_dashboard_autorefresh")
 
     header_left, header_right = st.columns([5, 1])
@@ -214,6 +229,8 @@ def main_content() -> None:
             now = time.time()
             if now - st.session_state.last_click >= 5:
                 st.session_state.last_click = now
+                fetch_order_data.clear()
+                fetch_db_stats.clear()
                 st.rerun()
         if st.button("강제 새로고침"):
             st.cache_data.clear()
@@ -241,6 +258,19 @@ def main_content() -> None:
             }[x],
             key="revenue_basis_select_root",
         )
+        with st.expander("결제일시가 여러 행에서 같을 때", expanded=False):
+            st.markdown(
+                "네이버는 **한 번 결제(장바구니)**에 여러 상품주문 줄이 붙으면, "
+                "각 줄에 **같은 결제일시**를 줍니다. 대시보드가 만든 복제가 아니라 API·DB 원본입니다."
+            )
+        try:
+            ds = fetch_db_stats(api_base_url)
+            lp = ds.get("latest_payment_date")
+            st.caption(
+                f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · 최신 결제일시 {lp or '—'}"
+            )
+        except Exception:
+            st.caption("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")
 
     try:
         raw_df = fetch_order_data(api_base_url, revenue_basis)

@@ -45,9 +45,9 @@ class OrdersByDateResponse(BaseModel):
 
 
 class OrderRawItem(BaseModel):
-    """`date`는 요청한 `revenue_basis`에 대응하는 영업일. `business_date`는 결제 기준 영업일(레거시 호환).
+    """`payment_date`는 원본 결제 시각, `business_date`는 16시 규칙으로 저장된 결제 기준 영업일(레거시 호환).
 
-    순매출 집계는 `net_revenue`를 사용한다."""
+    `date`는 요청한 `revenue_basis`에 대응하는 영업일. 순매출 집계는 `net_revenue`를 사용한다."""
 
     order_id: str
     content_order_no: str | None = None
@@ -63,6 +63,10 @@ class OrderRawItem(BaseModel):
     ordered_at: datetime | None = None
     placed_order_at: datetime | None = None
     shipped_at: datetime | None = None
+    # 네이버 API 원문(가공 없음). 화면 표시용.
+    order_datetime_raw: str = ""
+    payment_datetime_raw: str = ""
+    place_order_datetime_raw: str = ""
     buyer_name: str
     buyer_id: str
     receiver_name: str
@@ -106,3 +110,10 @@ class HeatmapCell(BaseModel):
 
 class HeatmapResponse(BaseModel):
     items: List[HeatmapCell]
+
+
+class DbStatsResponse(BaseModel):
+    """대시보드에서 DB 반영 여부 확인용(원장 건수·최신 결제 시각)."""
+
+    orders_count: int
+    latest_payment_date: datetime | None = None

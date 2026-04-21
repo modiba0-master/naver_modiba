@@ -24,10 +24,10 @@ class Order(Base):
     receiver_name: Mapped[str] = mapped_column(String(120))
     address: Mapped[str] = mapped_column(String(255))
     order_status: Mapped[str] = mapped_column(String(50), default="신규주문")
-    # 실제 결제 이벤트 시각(KST naive) — 의미상 paid_at. 매출 집계는 *_business_date 컬럼만 사용.
+    # 결제일시 원본(네이버 API 파싱값; 영업일 16시 규칙 미적용). 타임존 있으면 KST naive로만 통일.
     payment_date: Mapped[datetime] = mapped_column(DateTime)
     order_date: Mapped[date] = mapped_column(Date, index=True)
-    # 결제 기준 영업일(한국시간 16:00 컷, 레거시 호환: payment_business_date와 동일).
+    # payment_date 시각 기준 16:00 영업일 규칙으로 계산·저장. 집계 키(레거시 호환: payment_business_date와 동일).
     business_date: Mapped[date] = mapped_column(Date, index=True)
     order_business_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     payment_business_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
@@ -44,6 +44,10 @@ class Order(Base):
     shipped_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, default=None
     )
+    # 네이버 API 응답 문자열 그대로(표시·검증용). 집계·영업일 계산은 기존 DateTime 컬럼만 사용.
+    order_datetime_raw: Mapped[str] = mapped_column(String(255), default="")
+    payment_datetime_raw: Mapped[str] = mapped_column(String(255), default="")
+    place_order_datetime_raw: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

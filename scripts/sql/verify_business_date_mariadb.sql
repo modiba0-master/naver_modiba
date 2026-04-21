@@ -1,4 +1,4 @@
--- MariaDB/MySQL: business_date가 payment_date(한국시간) 16시 규칙과 일치하는지 검증.
+-- MariaDB/MySQL: business_date가 payment_date(KST) 16시 영업일 규칙과 일치하는지 검증.
 -- 기대 건수: 0
 -- 컬럼명: payment_date (paid_at 아님)
 

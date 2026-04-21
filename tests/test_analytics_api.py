@@ -23,6 +23,12 @@ def test_analytics_endpoints(client, db_session, monkeypatch):
     inserted = sync_orders(db_session)
     assert inserted == 1
 
+    stats = client.get("/analytics/db-stats")
+    assert stats.status_code == 200
+    sj = stats.json()
+    assert sj["orders_count"] >= 1
+    assert sj.get("latest_payment_date")
+
     by_date_response = client.get("/analytics/orders-by-date")
     assert by_date_response.status_code == 200
     assert "items" in by_date_response.json()

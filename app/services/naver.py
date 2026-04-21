@@ -42,6 +42,15 @@ def _to_iso_datetime(value: Any) -> str:
     return ""
 
 
+def _raw_api_datetime(value: Any) -> str:
+    """네이버가 준 주문·결제·발주 시각을 가공 없이 문자열로만 보관(DB `*_datetime_raw`)."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value).strip()
+
+
 def _normalize_status(value: Any) -> str:
     status = str(value or "").strip()
     return _STATUS_MAP.get(status, status or "신규주문")
@@ -208,6 +217,30 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
             item,
             "productOrder.placeOrderDate",
             "placeOrderDate",
+        ),
+        # API 원문 문자열(표시용). 동기화 시 DB `*_datetime_raw`에 그대로 적재한다.
+        "orderDateRaw": _raw_api_datetime(
+            _get_value(
+                item,
+                "order.orderDate",
+                "productOrder.orderDate",
+                "orderDate",
+            )
+        ),
+        "paymentDateRaw": _raw_api_datetime(
+            _get_value(
+                item,
+                "order.paymentDate",
+                "paymentDate",
+                "paymentDateTime",
+            )
+        ),
+        "placeOrderDateRaw": _raw_api_datetime(
+            _get_value(
+                item,
+                "productOrder.placeOrderDate",
+                "placeOrderDate",
+            )
         ),
         "sendDate": _get_value(
             item,

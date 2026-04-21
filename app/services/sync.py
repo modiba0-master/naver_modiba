@@ -2,18 +2,16 @@ import logging
 from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Order
 from app.services.naver import fetch_naver_orders
+from app.services.naver_orders_sync import calculate_business_date, to_kst_naive
 from app.services.revenue_compute import compute_net_revenue
 
 logger = logging.getLogger(__name__)
-
-KST = ZoneInfo("Asia/Seoul")
 
 VALID_ORDER_STATUSES = {
     "신규주문",
@@ -32,51 +30,49 @@ def is_valid_order_status(value: str) -> bool:
     return normalize_order_status(value) in VALID_ORDER_STATUSES
 
 
-def to_kst_naive(dt: datetime) -> datetime:
-    """DB 저장용 한국시간 벽시계(naive).
+def parse_payment_datetime_string(value: str) -> datetime | None:
+    """네이버 ``paymentDate`` → ``payment_date``(KST naive, 16시 영업일 로직 없음).
 
-    네이버가 내려주는 **타임존 없는** 결제일시는 이미 한국시간으로 간주해 숫자 그대로 둔다.
-    UTC(`Z`) 등만 서울 시각으로 맞춘 뒤 naive로 저장(한국시간 벽시계와 동일하게 맞추기 위함).
+    - ``Z``/``z`` 없음: ``fromisoformat`` → naive면 그대로(KST로 간주), aware면 ``to_kst_naive``.
+    - ``Z``/``z`` 있음: 접미사 제거 후 naive 파싱 → **+9시간**(UTC→KST 벽시계).
+
+    빈 문자열이면 ``None``.
     """
-    if dt.tzinfo is None:
-        return dt
-    return dt.astimezone(KST).replace(tzinfo=None)
-
-
-def parse_payment_datetime_string(value: str) -> datetime:
-    """`paymentDate` 파싱 후 한국시간 naive로 저장 (`payment_date`). 네이버 기본값은 이미 한국시간."""
     s = str(value).strip()
-    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    return to_kst_naive(dt)
+    if not s:
+        return None
+
+    if len(s) > 1 and s[-1] in ("Z", "z"):
+        core = s[:-1]
+        dt = datetime.fromisoformat(core)
+        return dt + timedelta(hours=9)
+
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        return to_kst_naive(dt)
+    return dt
 
 
-def calculate_business_date(event_dt: datetime) -> date:
-    """매출 집계일(영업일): **한국시간 벽시계** 기준 16:00 컷.
-
-    - 00:00~15:59 → 같은 날 영업일
-    - 16:00~23:59 → 익일 영업일  
-    즉 전일 16:00~당일 15:59 결제가 `business_date` = 당일로 묶인다.
-
-    네이버 결제일시는 이미 한국시간이므로, 저장된 시각 숫자에 위 규칙만 적용한다(달력일만 잘라 쓰지 않음).
-
-    동기화·`recompute_business_dates`에서만 계산. 집계는 `*_business_date` 컬럼만 사용.
-    """
-    dt = to_kst_naive(event_dt)
-    if dt.hour >= 16:
-        dt = dt + timedelta(days=1)
-    return dt.date()
+def _same_wallclock_payment(a: datetime, b: datetime) -> bool:
+    """재동기화 시 API 문자열만 다시 파싱할 때, 동일 시각이면 DB 값을 유지한다(불필요한 덮어쓰기 방지)."""
+    return a.replace(microsecond=0) == b.replace(microsecond=0)
 
 
 def _apply_revenue_and_business_dates(
     order: Order,
     *,
-    payment_stored: datetime,
+    payment_stored: datetime | None,
     ordered_at: datetime | None,
     shipped_at: datetime | None,
 ) -> None:
-    """결제·주문·발송 시각으로 세 영업일과 레거시 `business_date`를 맞춘다."""
-    payment_bd = calculate_business_date(payment_stored)
+    """``payment_date``는 원본 시각 유지 후, 그 값으로 ``business_date``(16시 규칙)·기타 영업일·순매출 반영."""
+    if payment_stored is None:
+        order.net_revenue = compute_net_revenue(
+            order.amount, order.refund_amount, order.cancel_amount
+        )
+        return
     order.payment_date = payment_stored
+    payment_bd = calculate_business_date(order.payment_date)
     order.business_date = payment_bd
     order.payment_business_date = payment_bd
     order.order_business_date = (
@@ -112,6 +108,13 @@ def _parse_api_datetime(value: Any) -> datetime | None:
 
 def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
     """동일 상품주문번호 재동기화 시 결제·발주·발송·주문일시·상태를 보강한다."""
+    if "orderDateRaw" in payload:
+        order.order_datetime_raw = str(payload.get("orderDateRaw") or "")
+    if "paymentDateRaw" in payload:
+        order.payment_datetime_raw = str(payload.get("paymentDateRaw") or "")
+    if "placeOrderDateRaw" in payload:
+        order.place_order_datetime_raw = str(payload.get("placeOrderDateRaw") or "")
+
     ra = int(payload.get("refundAmount") or 0)
     ca = int(payload.get("cancelAmount") or 0)
     order.refund_amount = ra
@@ -119,7 +122,18 @@ def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
 
     pd_raw = payload.get("paymentDate")
     if pd_raw:
-        payment_stored = parse_payment_datetime_string(str(pd_raw))
+        try:
+            parsed = parse_payment_datetime_string(str(pd_raw))
+        except ValueError:
+            parsed = None
+        if parsed is None:
+            payment_stored = order.payment_date
+        elif order.payment_date is not None and _same_wallclock_payment(
+            parsed, order.payment_date
+        ):
+            payment_stored = order.payment_date
+        else:
+            payment_stored = parsed
     else:
         payment_stored = order.payment_date
 
@@ -191,6 +205,9 @@ def sync_orders(db: Session) -> int:
         except ValueError:
             skipped_missing_payment += 1
             continue
+        if payment_stored is None:
+            skipped_missing_payment += 1
+            continue
 
         refund_amount = int(payload.get("refundAmount") or 0)
         cancel_amount = int(payload.get("cancelAmount") or 0)
@@ -204,7 +221,10 @@ def sync_orders(db: Session) -> int:
         order_calendar = ordered_at.date() if ordered_at else payment_stored.date()
         content_no = (payload.get("contentOrderNo") or "").strip() or None
 
-        payment_bd = calculate_business_date(payment_stored)
+        row: dict[str, Any] = {"payment_date": payment_stored}
+        row["business_date"] = calculate_business_date(row["payment_date"])
+        payment_date: datetime = row["payment_date"]
+        payment_bd: date = row["business_date"]
         order_bd = calculate_business_date(ordered_at) if ordered_at else payment_bd
         ship_bd = calculate_business_date(shipped_at) if shipped_at else None
 
@@ -220,7 +240,7 @@ def sync_orders(db: Session) -> int:
             receiver_name=payload["receiverName"],
             address=payload["shippingAddress"],
             order_status=order_status,
-            payment_date=payment_stored,
+            payment_date=payment_date,
             order_date=order_calendar,
             business_date=payment_bd,
             order_business_date=order_bd,
@@ -232,6 +252,9 @@ def sync_orders(db: Session) -> int:
             ordered_at=ordered_at,
             placed_order_at=placed_order_at,
             shipped_at=shipped_at,
+            order_datetime_raw=str(payload.get("orderDateRaw") or ""),
+            payment_datetime_raw=str(payload.get("paymentDateRaw") or ""),
+            place_order_datetime_raw=str(payload.get("placeOrderDateRaw") or ""),
         )
         db.add(order)
         inserted_count += 1

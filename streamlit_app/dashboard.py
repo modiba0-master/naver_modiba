@@ -135,6 +135,15 @@ def fetch_order_data(base_url: str, revenue_basis: str = "payment") -> pd.DataFr
     return pd.DataFrame(items)
 
 
+@st.cache_data(ttl=15)
+def fetch_db_stats(base_url: str) -> dict[str, object]:
+    """`/analytics/db-stats` — 원장 건수·최신 결제일시(실시간 DB 확인용)."""
+    url = base_url.rstrip("/")
+    r = httpx.get(f"{url}/analytics/db-stats", timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
 def _normalize_api_column_name(name: object) -> str:
     """API 응답 컬럼명을 내부 표준 snake_case로 정규화."""
     text = str(name).strip()
@@ -228,7 +237,7 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
             df[col] = ""
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    # 결제일시: 네이버=한국시간 벽시계 그대로 저장(naive). 매출 집계일은 `date`(16:00 영업일).
+    # 결제일시: 원본(payment_date). 매출 집계일 `date`는 저장된 business_date(16시 규칙).
     df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
@@ -269,6 +278,9 @@ def _require_login() -> bool:
 
         if password == actual_password and actual_password is not None:
             st.session_state.authenticated = True
+            st.session_state["_refresh_orders_after_login"] = True
+            fetch_order_data.clear()
+            fetch_db_stats.clear()
             st.rerun()
         else:
             st.error("비밀번호가 틀렸습니다.")
@@ -278,6 +290,10 @@ def _require_login() -> bool:
 
 
 def main_content() -> None:
+    if st.session_state.pop("_refresh_orders_after_login", False):
+        fetch_order_data.clear()
+        fetch_db_stats.clear()
+
     st_autorefresh(interval=60000, key="naver_modiba_dashboard_autorefresh")
 
     header_left, header_right = st.columns([5, 1])
@@ -291,6 +307,8 @@ def main_content() -> None:
             now = time.time()
             if now - st.session_state.last_click >= 5:
                 st.session_state.last_click = now
+                fetch_order_data.clear()
+                fetch_db_stats.clear()
                 st.rerun()
         if st.button("강제 새로고침"):
             st.cache_data.clear()
@@ -313,6 +331,19 @@ def main_content() -> None:
             }[x],
             key="revenue_basis_select",
         )
+        with st.expander("결제일시가 여러 행에서 같을 때", expanded=False):
+            st.markdown(
+                "네이버는 **한 번 결제(장바구니)**에 여러 상품주문 줄이 붙으면, "
+                "각 줄에 **같은 결제일시**를 줍니다. 대시보드가 만든 복제가 아니라 API·DB 원본입니다."
+            )
+        try:
+            ds = fetch_db_stats(api_base_url)
+            lp = ds.get("latest_payment_date")
+            st.caption(
+                f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · 최신 결제일시 {lp or '—'}"
+            )
+        except Exception:
+            st.caption("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")
 
     data_loaded_at = ""
     data_loaded_mode = "live"

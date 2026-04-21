@@ -15,6 +15,26 @@ if str(_ROOT) not in sys.path:
 
 from column_map import COLUMN_DISPLAY_ORDER, COLUMN_MAP
 
+_FULL_WIDTH_CSS_KEY = "_modiba_dataframe_full_width_css"
+
+
+def _inject_full_width_dataframe_css_once() -> None:
+    """Glide dataframe 등에서 max-width가 좁게 잡히는 경우 대비."""
+    if st.session_state.get(_FULL_WIDTH_CSS_KEY):
+        return
+    st.markdown(
+        """
+<style>
+    div[data-testid="stDataFrame"] {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    st.session_state[_FULL_WIDTH_CSS_KEY] = True
+
 
 def _comma_format_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -92,6 +112,7 @@ def show_summary_table(data: pd.DataFrame | list | dict) -> None:
 
 
 def show_data_grid(data: pd.DataFrame | list | dict) -> None:
+    _inject_full_width_dataframe_css_once()
     df_src = _ensure_dataframe(data)
     df = df_src.copy()
     df.columns = [_to_display_column_name(col) for col in df.columns]
@@ -99,4 +120,7 @@ def show_data_grid(data: pd.DataFrame | list | dict) -> None:
     df = _order_display_columns(df)
     df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    try:
+        st.dataframe(df, width="stretch", hide_index=True)
+    except TypeError:
+        st.dataframe(df, use_container_width=True, hide_index=True)
