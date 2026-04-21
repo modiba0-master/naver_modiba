@@ -23,6 +23,28 @@
 - 상세 규칙: `.cursor/rules/*.mdc`
 - 대시보드 작업 워크플로: `.cursor/skills/naver-modiba-dashboard/SKILL.md`
 
+## 에이전트 연속용 컨텍스트 (2026-04-22) — 다음 호출 시 유지할 것
+
+### 데이터 모델 (주문·매출일)
+- **`payment_date`**: 네이버 결제 **원본 시각** (16시 영업일 로직 없음). `app/services/sync.py`의 `parse_payment_datetime_string`.
+- **파싱 규칙**: `Z`/`z` 접미사 → 접미사 제거 후 naive 파싱 → **`+9시간`** (UTC 벽시각 → KST naive). 그 외 naive는 KST로 간주, aware는 `to_kst_naive`.
+- **`business_date` / `payment_business_date`**: `payment_date`에 **16:00 영업일 규칙** (`app/services/order_transformer.py` → `hour >= 16`이면 익일 `date()`). DB에 저장.
+- **파생 경로**: `app/services/naver_orders_sync.py` (`calculate_business_date`, `to_kst_naive`) + `sync.py`에서 insert 시 `row["business_date"] = calculate_business_date(row["payment_date"])` 패턴.
+
+### API·분석
+- **`GET /analytics/orders-raw`**: 기간 있을 때 SQL에서 **`business_date`(및 revenue_basis에 맞는 coalesce 컬럼)** 로 필터 — 전량 로드 후 Python 필터 아님. 라우터: `app/routers/analytics.py`, 로직: `app/services/analytics_service.py`.
+
+### 스크립트
+- **`scripts/recompute_business_dates.py`**: MySQL/SQLite/PG에 맞춰 **`business_date`·`payment_business_date` 벌크 UPDATE** (16시 CASE) 후 Python 배치로 주문·발송 영업일·`net_revenue` 정리. `--no-bulk-sql` / `--verify-only` 지원.
+
+### 설정·로컬 DB (Railway)
+- **`load_dotenv()`**: `app/config.py` 최상단 + `streamlit_app/services/db.py`에서 프로젝트 루트 `sys.path` 후 로드.
+- **`app/db_url_utils.py`**: 비밀번호 URL 파싱 실패 시 `quote_plus` 재인코딩, `print_database_url_diagnostics` (호스트·`public_host`·마스킹 URL). **`pytest`가 로드된 경우에는 print 생략**.
+- **로컬에서 `*.railway.internal` 연결 불가** 시: `.env`에 `DATABASE_URL_USE_PUBLIC=1` + Railway **`DATABASE_PUBLIC_URL`** 설정.
+
+### 테스트
+- `tests/test_order_transformer.py`, `tests/test_services.py`, `tests/test_analytics_api.py` 등으로 상기 규칙 검증.
+
 ## 최신 작업 상태 (2026-04-17)
 - 아키텍처 전환:
   - API 요청 경로에서 네이버 직접 호출 제거

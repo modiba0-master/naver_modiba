@@ -1,6 +1,14 @@
+import os
+import sys
+
+from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine.url import make_url
+
+from app.db_url_utils import encode_mysql_password_in_url, print_database_url_diagnostics
+
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -29,11 +37,16 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
+        if os.getenv("DATABASE_URL_USE_PUBLIC", "").lower() in ("1", "true", "yes"):
+            pub = os.getenv("DATABASE_PUBLIC_URL", "").strip().strip('"').strip("'")
+            if pub:
+                value = pub
         url = str(value or "").strip().strip('"').strip("'")
         if url.startswith("mariadb://"):
             url = url.replace("mariadb://", "mysql+pymysql://", 1)
         if url.startswith("mysql://") and "pymysql" not in url:
             url = url.replace("mysql://", "mysql+pymysql://", 1)
+        url = encode_mysql_password_in_url(url)
         return url
 
     @field_validator("database_url", mode="after")
@@ -64,3 +77,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+if "pytest" not in sys.modules:
+    if os.getenv("DATABASE_URL_USE_PUBLIC", "").lower() in ("1", "true", "yes"):
+        print("[config] DATABASE_URL_USE_PUBLIC=1 → 연결 문자열은 DATABASE_PUBLIC_URL 기준")
+    print_database_url_diagnostics(settings.database_url)
