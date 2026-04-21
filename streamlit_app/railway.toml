@@ -1,0 +1,10 @@
+# 모노레포에서 Root Directory가 `streamlit_app`이면, Railway 설정의
+# "Config as code" 경로에 `/streamlit_app/railway.toml` 을 지정해야 이 파일이 적용된다.
+# (Root Directory와 무관하게 저장소 루트 기준 경로로 지정)
+#
+# 대시보드 시작 명령이 UI에 `streamlit run app.py`로 남아 있으면 패키지 `app/`과 충돌하므로 `run.py`로 통일.
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "streamlit run run.py --server.port $PORT --server.address 0.0.0.0 --browser.gatherUsageStats false"

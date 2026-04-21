@@ -1,11 +1,7 @@
 """매출 귀속일(business_date) ↔ KST 집계 구간 표시.
 
-귀속 규칙(동기화와 동일): 결제 시각 KST 기준 당일 00:00~15:59 → 그날,
-16:00 이상 → 익일 귀속. 따라서 귀속일 D에 포함되는 결제 구간은
-
-  [ (D-1)일 16:00 KST , D일 16:00 KST )  (시작 포함, 끝 제외)
-
-Streamlit 전용 복제: `streamlit_app/services/aggregation_display.py` (로직 동일, 함께 유지).
+`app/aggregation_display.py`와 동일한 로직. 대시보드만 배포(streamlit_app 루트)할 때
+상위 `app/` 패키지 없이 동작하도록 복제해 둔다 — 변경 시 양쪽을 맞출 것.
 """
 
 from __future__ import annotations

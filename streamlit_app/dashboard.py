@@ -18,7 +18,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.aggregation_display import format_kst_sales_window
+from services.aggregation_display import format_kst_sales_window
 
 from services.data_grid import show_data_grid, show_summary_table
 from services.db import SessionLocal
