@@ -35,6 +35,20 @@ def _parse_payment_date(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _payment_date_for_db(payment_date: datetime) -> datetime:
+    """DB 컬럼은 timezone 없이 보관. 네이버 API에서 파싱한 순간을 KST 벽시계로만 저장(+9를 별도로 더하지 않음)."""
+    if payment_date.tzinfo is None:
+        return payment_date
+    return payment_date.astimezone(KST).replace(tzinfo=None)
+
+
+def _api_datetime_for_db(value: datetime | None) -> datetime | None:
+    """주문일시·발주·발송 등 API 시각을 payment_date와 동일 규칙(KST naive)으로 저장."""
+    if value is None:
+        return None
+    return _payment_date_for_db(value)
+
+
 def _parse_api_datetime(value: Any) -> datetime | None:
     if value is None or value == "":
         return None
@@ -53,6 +67,8 @@ def calculate_business_date(payment_date: datetime) -> date:
     """
     매출 귀속일(일자별 집계 키): 결제 시각을 한국시간(KST)으로 본 뒤
     당일 00:00~15:59 → 그날, 16:00 이후 → 익일.(요일·주말 별도 귀속 없음)
+
+    DB에 넣을 때는 naive를 KST 벽시계로 둠(`_payment_date_for_db`). naive인 경우 그 값을 KST로 해석한다.
     """
     if payment_date.tzinfo is None:
         local = payment_date.replace(tzinfo=KST)
@@ -69,18 +85,18 @@ def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
     pd_raw = payload.get("paymentDate")
     if pd_raw:
         payment_date = _parse_payment_date(str(pd_raw))
-        order.payment_date = payment_date
+        order.payment_date = _payment_date_for_db(payment_date)
         order.business_date = calculate_business_date(payment_date)
     od = _parse_api_datetime(payload.get("orderDate"))
     if od:
-        order.ordered_at = od
-        order.order_date = od.date()
+        order.ordered_at = _api_datetime_for_db(od)
+        order.order_date = order.ordered_at.date()
     po = _parse_api_datetime(payload.get("placeOrderDate"))
     if po:
-        order.placed_order_at = po
+        order.placed_order_at = _api_datetime_for_db(po)
     sd = _parse_api_datetime(payload.get("sendDate"))
     if sd:
-        order.shipped_at = sd
+        order.shipped_at = _api_datetime_for_db(sd)
     st = normalize_order_status(payload.get("orderStatus", ""))
     if is_valid_order_status(st):
         order.order_status = st
@@ -100,6 +116,7 @@ def sync_orders(db: Session) -> int:
     merged_existing = 0
     invalid_status = Counter()
     skipped_bad_qty = 0
+    skipped_missing_payment = 0
 
     for payload in payloads:
         order_id = payload["orderId"]
@@ -121,12 +138,23 @@ def sync_orders(db: Session) -> int:
             skipped_bad_qty += 1
             continue
 
-        payment_date = _parse_payment_date(payload["paymentDate"])
+        raw_pd = payload.get("paymentDate")
+        if raw_pd is None or not str(raw_pd).strip():
+            skipped_missing_payment += 1
+            continue
+        try:
+            payment_date = _parse_payment_date(str(raw_pd))
+        except ValueError:
+            skipped_missing_payment += 1
+            continue
         business_date = calculate_business_date(payment_date)
-        ordered_at = _parse_api_datetime(payload.get("orderDate"))
-        placed_order_at = _parse_api_datetime(payload.get("placeOrderDate"))
-        shipped_at = _parse_api_datetime(payload.get("sendDate"))
-        order_calendar = ordered_at.date() if ordered_at else payment_date.date()
+        payment_stored = _payment_date_for_db(payment_date)
+        ordered_at = _api_datetime_for_db(_parse_api_datetime(payload.get("orderDate")))
+        placed_order_at = _api_datetime_for_db(
+            _parse_api_datetime(payload.get("placeOrderDate"))
+        )
+        shipped_at = _api_datetime_for_db(_parse_api_datetime(payload.get("sendDate")))
+        order_calendar = ordered_at.date() if ordered_at else payment_stored.date()
         content_no = (payload.get("contentOrderNo") or "").strip() or None
 
         order = Order(
@@ -141,7 +169,7 @@ def sync_orders(db: Session) -> int:
             receiver_name=payload["receiverName"],
             address=payload["shippingAddress"],
             order_status=order_status,
-            payment_date=payment_date,
+            payment_date=payment_stored,
             order_date=order_calendar,
             business_date=business_date,
             ordered_at=ordered_at,
@@ -153,12 +181,14 @@ def sync_orders(db: Session) -> int:
 
     db.commit()
     logger.info(
-        "sync_orders: fetched=%s inserted=%s merged_existing=%s skipped_invalid_status=%s skipped_bad_qty=%s",
+        "sync_orders: fetched=%s inserted=%s merged_existing=%s skipped_invalid_status=%s "
+        "skipped_bad_qty=%s skipped_missing_payment=%s",
         len(payloads),
         inserted_count,
         merged_existing,
         sum(invalid_status.values()),
         skipped_bad_qty,
+        skipped_missing_payment,
     )
     if invalid_status:
         logger.warning(

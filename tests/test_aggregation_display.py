@@ -21,15 +21,13 @@ def test_kst_sales_window_for_april_21():
     assert "KST" in s
 
 
-def test_kpi_table_monday_label():
-    mon = date(2026, 4, 20)  # 월
-    t = format_kpi_daily_table_window_kst(mon)
-    assert "월요일 집계" in t
-
-
-def test_kpi_table_saturday_splits_sat_sun():
-    sat = date(2026, 4, 18)  # 토
-    t = format_kpi_daily_table_window_kst(sat)
-    assert "토 귀속" in t
-    assert "일 귀속" in t
-    assert "\n" in t
+def test_kpi_table_window_matches_plain_window_all_weekdays():
+    """KPI 표는 요일과 무관하게 전일 16:00 ~ 당일 16:00 한 줄만 표시."""
+    mon = date(2026, 4, 20)
+    sat = date(2026, 4, 18)
+    sun = date(2026, 4, 19)
+    for d in (mon, sat, sun):
+        assert format_kpi_daily_table_window_kst(d) == format_kst_sales_window(d)
+    assert "월요일" not in format_kpi_daily_table_window_kst(mon)
+    assert "토 귀속" not in format_kpi_daily_table_window_kst(sat)
+    assert "\n" not in format_kpi_daily_table_window_kst(sat)

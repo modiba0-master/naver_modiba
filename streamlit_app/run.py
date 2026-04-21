@@ -221,10 +221,10 @@ def main() -> None:
         start_date = st.date_input("시작일", value=default_start)
         end_date = st.date_input("종료일", value=today)
         st.caption(
-            "집계: 매출 귀속일 D = 결제(KST)가 [D-1 16:00, D 16:00)에 속하는 주문. "
-            "시간대 차트는 DB payment_date를 UTC로 두고 +9h 보정한 값입니다."
+            "집계: 매출 집계일 D = 결제(KST)가 [D-1 16:00, D 16:00)에 속하는 주문. "
+            "시간대 차트는 DB에 저장된 결제일시(동기화 시 KST 벽시계)를 그대로 사용합니다(+9 보정 없음)."
         )
-        st.caption("판매관리 집계 상태: 상태 제한 없음 (매출 귀속일 기준)")
+        st.caption("판매관리 집계 상태: 상태 제한 없음 (매출 집계일 기준)")
 
     if start_date and end_date and start_date > end_date:
         st.error("시작일은 종료일보다 클 수 없습니다.")

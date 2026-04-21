@@ -8,7 +8,7 @@ import httpx
 import pandas as pd
 import streamlit as st
 
-from app.aggregation_display import format_kpi_daily_table_window_kst, format_kst_sales_window
+from app.aggregation_display import format_kst_sales_window
 
 from streamlit_app.services.data_grid import show_data_grid
 from streamlit_app.services.kpi_from_filtered import (
@@ -33,60 +33,37 @@ REQUIRED_COLUMNS = [
 ]
 KST = ZoneInfo("Asia/Seoul")
 
+_WEEKDAY_KO = ("월", "화", "수", "목", "금", "토", "일")
 
-def _kpi_attribution_date_label(d: date) -> str:
-    """토·일 귀속일은 (토)(일) 표기, 월요일은 (월). 그 외는 ISO 날짜만."""
-    base = d.isoformat()
-    w = d.weekday()
-    if w == 5:
-        return f"{base} (토)"
-    if w == 6:
-        return f"{base} (일)"
-    if w == 0:
-        return f"{base} (월)"
-    return base
+
+def _format_sales_date_label(d: date) -> str:
+    """매출 집계일(달력) + 요일 — KPI 일자 행에 통일 표기."""
+    return f"{d.isoformat()} ({_WEEKDAY_KO[d.weekday()]})"
 
 
 def _aggregate_kpi_daily(kpi_daily_table: pd.DataFrame) -> pd.DataFrame:
-    """귀속일별 주문금액 합계. 월요일 귀속일만 결제일시 UTC 달력으로 일·월 결제액 분리(KST 변환 없음)."""
+    """매출 집계일별 주문금액·건수·수량 합계 (`date` = API business_date, 백엔드 KST 16시 경계)."""
     if kpi_daily_table.empty:
         return pd.DataFrame(
             columns=[
                 "date",
                 "total_amount",
-                "mon_from_sun_pay",
-                "mon_from_mon_pay",
                 "order_count",
                 "total_quantity",
             ]
         )
     df = kpi_daily_table.copy()
-    pay = pd.to_datetime(df["payment_date"], errors="coerce")
-    if pay.dt.tz is None:
-        pay_utc = pay.dt.tz_localize("UTC")
-    else:
-        pay_utc = pay.dt.tz_convert("UTC")
-    df["_pay_wd_utc"] = pay_utc.dt.weekday
     df["_amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     out_rows: list[dict] = []
     for d, g in df.groupby("date"):
         a = g["_amount"]
-        wd = g["_pay_wd_utc"]
         total = float(a.sum())
         oid = int(g["order_id"].astype(str).replace("", pd.NA).dropna().nunique())
         tq = float(pd.to_numeric(g["quantity"], errors="coerce").fillna(0).sum())
-        sun_pay = 0.0
-        mon_pay = 0.0
-        if d.weekday() == 0:
-            ok = wd.notna()
-            sun_pay = float(a[ok & (wd == 6)].sum())
-            mon_pay = float(a[ok & (wd == 0)].sum())
         out_rows.append(
             {
                 "date": d,
                 "total_amount": total,
-                "mon_from_sun_pay": sun_pay,
-                "mon_from_mon_pay": mon_pay,
                 "order_count": oid,
                 "total_quantity": tq,
             }
@@ -180,11 +157,8 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
             df[col] = ""
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    pay = pd.to_datetime(df["payment_date"], errors="coerce")
-    if pay.dt.tz is None:
-        df["payment_date"] = pay.dt.tz_localize(KST, ambiguous="NaT", nonexistent="NaT")
-    else:
-        df["payment_date"] = pay.dt.tz_convert(KST)
+    # 결제일시: API/DB에 저장된 값 그대로(+9h 등 별도 보정 없음). 매출 집계일은 `date`(business_date) 사용.
+    df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
     df["multiplier"] = df["option_name"].apply(extract_multiplier)
@@ -301,23 +275,30 @@ def main_content() -> None:
     default_start = default_end - timedelta(days=6)
 
     st.markdown("## KPI 영역")
+    with st.expander("일시·매출 집계 기준 (DB / API)", expanded=False):
+        st.markdown(
+            """
+1. **결제일시·주문일시** — 네이버 API 동기화 시 파싱 후 DB에는 **KST 벽시계(naive)** 로 저장합니다. (`app.services.sync`)
+2. **매출 집계일** — API의 `date` / DB `business_date`와 동일합니다. 결제 시각(KST) **당일 00:00~15:59 → 그날**, **16:00 이후 → 익일**로 집계일이 정해지며, **시간대 분석·요일과 같은 16시 경계**로 일자별 매출을 맞춥니다.
+3. **일자 불일치 시** — 과거 데이터만 어긋나면 서버에서 `python scripts/recompute_business_dates.py` 로 `business_date`를 재계산할 수 있습니다.
+            """.strip()
+        )
     kpi_col1, kpi_col2 = st.columns(2)
     with kpi_col1:
         kpi_start_date = st.date_input(
-            "KPI 시작일 (매출 귀속일)",
+            "KPI 시작일 (매출 집계일)",
             value=default_start,
             key="kpi_start_date",
         )
     with kpi_col2:
         kpi_end_date = st.date_input(
-            "KPI 종료일 (매출 귀속일)",
+            "KPI 종료일 (매출 집계일)",
             value=default_end,
             key="kpi_end_date",
         )
 
     st.caption(
-        "매출 귀속일 D: 결제 시각(KST)이 [D-1일 16:00, D일 16:00) 구간에 들어가는 주문이 D일 매출로 집계됩니다. "
-        "표·상세의 「매출집계구간」 열에 동일 구간을 표시합니다."
+        "KPI는 **매출 집계일**(`business_date`) 기준입니다. 결제·시간대 차트와 동일한 KST **16시 경계**로 일자가 나뉩니다."
     )
 
     if kpi_start_date > kpi_end_date:
@@ -376,11 +357,9 @@ def main_content() -> None:
     )
 
     st.markdown("")
-    st.subheader("KPI 일자 테이블 (최근 7일, KST 매출 집계구간)")
+    st.subheader("KPI 일자 테이블 (최근 7일, 일자별 매출)")
     st.caption(
-        "주문금액: 귀속일 구간 전체 합계. "
-        "월요일 귀속일만 결제일시를 **UTC 달력**으로 보고 일요일·월요일 결제 금액을 분리(결제일시에 KST 보정 없음). "
-        "토·일 귀속일 열에는 (토)(일)만 표기."
+        "행별 금액은 해당 **매출 집계일**에 합산된 주문만 포함합니다. 상세 주문 표의 「매출집계구간」은 동일 일자의 16:00 구간 안내용입니다."
     )
     kpi_daily_start = default_end - timedelta(days=6)
     kpi_daily_mask = (
@@ -394,23 +373,17 @@ def main_content() -> None:
         {"date": pd.date_range(kpi_daily_start, default_end, freq="D").date}
     )
     daily_kpi = cal.merge(daily_kpi, on="date", how="left")
-    for col in ("total_amount", "mon_from_sun_pay", "mon_from_mon_pay", "total_quantity"):
+    for col in ("total_amount", "total_quantity"):
         daily_kpi[col] = pd.to_numeric(daily_kpi[col], errors="coerce").fillna(0.0)
     daily_kpi["order_count"] = daily_kpi["order_count"].fillna(0).astype(int)
-    daily_kpi["aggregation_window_kst"] = daily_kpi["date"].map(
-        format_kpi_daily_table_window_kst
-    )
-    daily_kpi["date_label"] = daily_kpi["date"].map(_kpi_attribution_date_label)
+    daily_kpi["date_label"] = daily_kpi["date"].map(_format_sales_date_label)
     daily_kpi = daily_kpi.sort_values("date", ascending=False)
     daily_kpi = daily_kpi[
         [
             "date_label",
             "total_amount",
-            "mon_from_sun_pay",
-            "mon_from_mon_pay",
             "order_count",
             "total_quantity",
-            "aggregation_window_kst",
         ]
     ]
     total_row = pd.DataFrame(
@@ -418,11 +391,8 @@ def main_content() -> None:
             {
                 "date_label": "합계",
                 "total_amount": daily_kpi["total_amount"].sum(),
-                "mon_from_sun_pay": daily_kpi["mon_from_sun_pay"].sum(),
-                "mon_from_mon_pay": daily_kpi["mon_from_mon_pay"].sum(),
                 "order_count": int(daily_kpi["order_count"].sum()),
                 "total_quantity": daily_kpi["total_quantity"].sum(),
-                "aggregation_window_kst": "—",
             }
         ]
     )
@@ -434,13 +404,13 @@ def main_content() -> None:
     ana_col1, ana_col2 = st.columns(2)
     with ana_col1:
         analysis_start_date = st.date_input(
-            "분석 시작일 (매출 귀속일)",
+            "분석 시작일 (매출 집계일)",
             value=default_start,
             key="analysis_start_date",
         )
     with ana_col2:
         analysis_end_date = st.date_input(
-            "분석 종료일 (매출 귀속일)",
+            "분석 종료일 (매출 집계일)",
             value=default_end,
             key="analysis_end_date",
         )

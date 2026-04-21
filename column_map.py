@@ -11,8 +11,8 @@ from __future__ import annotations
 COLUMN_MAP: dict[str, str] = {
     "order_id": "상품주문번호",
     "content_order_no": "주문번호",
-    "date": "귀속일(달력)",
-    "date_label": "귀속일(달력)",
+    "date": "매출 집계일(달력)",
+    "date_label": "매출 집계일(달력)",
     "aggregation_window_kst": "매출집계구간(KST)",
     "payment_date": "결제일시",
     "buyer_name": "구매자명",
@@ -25,8 +25,6 @@ COLUMN_MAP: dict[str, str] = {
     "product_name": "상품명",
     "option_name": "옵션상품명",
     "order_date": "주문일(달력)",
-    "mon_from_sun_pay": "월요일 귀속·일요일 결제(UTC)",
-    "mon_from_mon_pay": "월요일 귀속·월요일 결제(UTC)",
     "total_amount": "주문금액",
     "total_quantity": "총 수량",
     "product_group": "상품군",
@@ -44,7 +42,7 @@ COLUMN_MAP: dict[str, str] = {
     "pack_count_sum": "팩수량 합계",
     "converted_quantity": "환산수량",
     "address": "전체주소",
-    "business_date": "매출 귀속일",
+    "business_date": "매출 집계일",
     "order_calendar_date": "주문일(날짜)",
     "ordered_at": "주문일시",
     "placed_order_at": "발주처리일시",
@@ -60,10 +58,8 @@ COLUMN_MAP: dict[str, str] = {
 
 # 한글 헤더 기준 표시 순서(앞에서부터 배치). 여기 없는 컬럼(미매핑 영문 등)은 기존 순서로 뒤에 둔다.
 COLUMN_DISPLAY_ORDER: list[str] = [
-    "귀속일(달력)",
+    "매출 집계일(달력)",
     "주문금액",
-    "월요일 귀속·일요일 결제(UTC)",
-    "월요일 귀속·월요일 결제(UTC)",
     "주문수량",
     "총 수량",
     "매출집계구간(KST)",

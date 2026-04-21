@@ -39,8 +39,8 @@ class OrdersByDateResponse(BaseModel):
 
 
 class OrderRawItem(BaseModel):
-    """`date`와 `business_date`는 동일: 결제일시를 KST로 본 16:00 컷오프 매출 귀속일.
-    `aggregation_window_kst`: 해당 귀속일에 대응하는 집계 구간 [전일 16:00, 당일 16:00) KST 문구.
+    """`date`와 `business_date`는 동일: 매출 집계일(KST 결제 시각 16시 경계, 시간대 집계와 동일 규칙).
+    `aggregation_window_kst`: 그 집계일에 해당하는 [전일 16:00, 당일 16:00) KST 안내 문구(상세 표용).
     `order_calendar_date`: 주문일(달력). `order_id`: 상품주문번호. `content_order_no`: 주문번호(동일 결제에 여러 상품줄)."""
 
     order_id: str

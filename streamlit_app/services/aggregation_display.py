@@ -29,29 +29,5 @@ def format_kst_sales_window(business_day: date) -> str:
 
 
 def format_kpi_daily_table_window_kst(business_day: date) -> str:
-    """KPI 일자 테이블 전용: `app/aggregation_display.py` 와 동일 로직."""
-    wd = business_day.weekday()
-    start, end_excl = kst_sales_window_for_business_date(business_day)
-    if wd == 0:
-        return (
-            f"월요일 집계: {start.strftime('%Y-%m-%d %H:%M')} ~ "
-            f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
-        )
-    if wd == 5:
-        sun_bd = business_day + timedelta(days=1)
-        s2, e2 = kst_sales_window_for_business_date(sun_bd)
-        line_sat = (
-            f"토 귀속: {start.strftime('%Y-%m-%d %H:%M')} ~ "
-            f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
-        )
-        line_sun = (
-            f"일 귀속: {s2.strftime('%Y-%m-%d %H:%M')} ~ "
-            f"{e2.strftime('%Y-%m-%d %H:%M')} (KST)"
-        )
-        return line_sat + "\n" + line_sun
-    if wd == 6:
-        return (
-            f"일요일: {start.strftime('%Y-%m-%d %H:%M')} ~ "
-            f"{end_excl.strftime('%Y-%m-%d %H:%M')} (KST)"
-        )
+    """KPI 일자 테이블: `app/aggregation_display.py` 와 동일 — 매일 전일 16:00 ~ 당일 16:00 (KST)."""
     return format_kst_sales_window(business_day)

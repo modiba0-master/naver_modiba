@@ -4,6 +4,24 @@ import pandas as pd
 from sqlalchemy import Engine, text
 
 
+def _hour_sql(dialect: str) -> str:
+    """payment_date는 KST 벽시계(naive)로 저장한다고 보고 시(hour)만 추출(+9 보정 없음)."""
+    if dialect == "sqlite":
+        return "CAST(strftime('%H', payment_date) AS INTEGER)"
+    if dialect == "postgresql":
+        return "CAST(EXTRACT(HOUR FROM payment_date) AS INTEGER)"
+    return "HOUR(payment_date)"
+
+
+def _weekday_sql(dialect: str) -> str:
+    """MySQL WEEKDAY와 맞춤: 월=0 … 일=6."""
+    if dialect == "sqlite":
+        return "(CAST(strftime('%w', payment_date) AS INTEGER) + 6) % 7"
+    if dialect == "postgresql":
+        return "(CAST(EXTRACT(ISODOW FROM CAST(payment_date AS DATE)) AS INTEGER) - 1 + 7) % 7"
+    return "WEEKDAY(DATE(payment_date))"
+
+
 def _date_filter_sql(date_col: str = "business_date") -> str:
     return f"""
     WHERE (:start_date IS NULL OR {date_col} >= :start_date)
@@ -86,26 +104,28 @@ def get_option_analysis(engine: Engine, start_date: date | None, end_date: date 
 
 
 def get_time_analysis(engine: Engine, start_date: date | None, end_date: date | None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    # payment_date는 API(UTC) 기준이 저장된 경우가 많아 KST로 +9h 보정 후 시·요일 집계
+    dialect = engine.dialect.name
+    h = _hour_sql(dialect)
+    w = _weekday_sql(dialect)
     hour_query = text(
         f"""
         SELECT
-            HOUR(DATE_ADD(payment_date, INTERVAL 9 HOUR)) AS hour_of_day,
+            {h} AS hour_of_day,
             COUNT(*) AS orders
         FROM orders
         {_date_filter_sql("business_date")}
-        GROUP BY HOUR(DATE_ADD(payment_date, INTERVAL 9 HOUR))
+        GROUP BY {h}
         ORDER BY hour_of_day
         """
     )
     weekday_query = text(
         f"""
         SELECT
-            WEEKDAY(DATE(DATE_ADD(payment_date, INTERVAL 9 HOUR))) AS weekday_num,
+            {w} AS weekday_num,
             COUNT(*) AS orders
         FROM orders
         {_date_filter_sql("business_date")}
-        GROUP BY WEEKDAY(DATE(DATE_ADD(payment_date, INTERVAL 9 HOUR)))
+        GROUP BY {w}
         ORDER BY weekday_num
         """
     )

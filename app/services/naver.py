@@ -34,11 +34,12 @@ def _get_value(payload: dict[str, Any], *paths: str) -> Any:
 
 
 def _to_iso_datetime(value: Any) -> str:
-    if isinstance(value, str) and value:
-        return value
+    """API 시각을 문자열로 통과. 없으면 빈 문자열 — 결제일시 누락 시 `datetime.now()`로 채우지 않음(잘못된 집계 방지)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     if isinstance(value, datetime):
         return value.isoformat()
-    return datetime.now(timezone.utc).isoformat()
+    return ""
 
 
 def _normalize_status(value: Any) -> str:
@@ -162,13 +163,14 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
             )
             or ""
         ),
+        # 결제는 주문(장바구니) 단위 1회 → 같은 주문의 상품줄마다 동일한 paymentDate가 반복되는 것이 정상.
+        # lastChangedDate는 결제 시각과 다를 수 있어 결제일시 대용으로 쓰지 않음.
         "paymentDate": _to_iso_datetime(
             _get_value(
                 item,
                 "order.paymentDate",
                 "paymentDate",
                 "paymentDateTime",
-                "lastChangedDate",
             )
         ),
         # 주문/발주/발송 시각(상세 API 필드; 없으면 None → sync에서 생략)
