@@ -93,6 +93,20 @@ def _to_display_column_name(col: object) -> str:
     return COLUMN_MAP.get(original, COLUMN_MAP.get(_normalize_key_for_mapping(original), original))
 
 
+def _make_unique_column_headers(df: pd.DataFrame) -> pd.DataFrame:
+    """st.data_editor는 한글 헤더까지 유일해야 함. 매핑 충돌 시 (2),(3) 접미사 부여."""
+    seen: dict[str, int] = {}
+    new_cols: list[str] = []
+    for c in df.columns:
+        base = str(c)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        new_cols.append(base if n == 0 else f"{base} ({n + 1})")
+    out = df.copy()
+    out.columns = new_cols
+    return out
+
+
 def show_summary_table(data: pd.DataFrame | list | dict) -> None:
     """소형 요약(orders/daily_summary 등): show_data_grid와 동일."""
     show_data_grid(data)
@@ -108,6 +122,7 @@ def show_data_grid(data: pd.DataFrame | list | dict) -> None:
     # 매핑 키와 입력 컬럼 케이스가 다를 때(snake/camel)만 보완 매핑 적용
     df.columns = [_to_display_column_name(col) for col in df.columns]
     # 매핑 테이블에 없는 컬럼은 영문 등 원래 이름 그대로 표시 (열을 버리지 않음)
+    df = _make_unique_column_headers(df)
     df = _order_display_columns(df)
     df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
