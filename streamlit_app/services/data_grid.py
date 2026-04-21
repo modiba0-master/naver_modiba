@@ -117,11 +117,9 @@ def show_data_grid(data: pd.DataFrame | list | dict) -> None:
     df_src = _ensure_dataframe(data)
     # 원본(동일 객체) 컬럼은 절대 덮어쓰지 않음 — 항상 사본에만 표시명 반영
     df = df_src.copy()
-    # 컬럼 rename은 show_data_grid 내부에서만 수행한다.
-    df.rename(columns=COLUMN_MAP, inplace=True)
-    # 매핑 키와 입력 컬럼 케이스가 다를 때(snake/camel)만 보완 매핑 적용
+    # `df.rename(columns=COLUMN_MAP)` 는 서로 다른 열이 같은 한글로 매핑될 때 pandas가
+    # 동일한 표시명을 여러 열에 붙여 data_editor가 실패한다. 열 단위 매핑만 사용한다.
     df.columns = [_to_display_column_name(col) for col in df.columns]
-    # 매핑 테이블에 없는 컬럼은 영문 등 원래 이름 그대로 표시 (열을 버리지 않음)
     df = _make_unique_column_headers(df)
     df = _order_display_columns(df)
     df = _move_total_rows_to_bottom(df)
