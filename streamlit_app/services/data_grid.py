@@ -1,4 +1,4 @@
-"""표시 전용 그리드 — HTML 테이블, 가로폭 50% 고정."""
+"""표시용 그리드 — Streamlit 기본 테이블(전체 폭)."""
 
 from __future__ import annotations
 
@@ -87,36 +87,6 @@ def _make_unique_column_headers(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _render_fixed_table_html(df: pd.DataFrame) -> None:
-    html_table = df.to_html(index=False, escape=True, classes="fixed-inner-table")
-    st.markdown(
-        f"""
-<style>
-.fixed-table-wrap {{
-    width: 50%;
-    min-width: 50%;
-    max-width: 50%;
-    overflow-x: hidden;
-}}
-.fixed-table-wrap table {{
-    width: 100%;
-    table-layout: fixed;
-}}
-.fixed-table-wrap th, .fixed-table-wrap td {{
-    text-align: center;
-    vertical-align: middle;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}}
-</style>
-<div class="fixed-table-wrap">
-{html_table}
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-
 def show_summary_table(data: pd.DataFrame | list | dict) -> None:
     show_data_grid(data)
 
@@ -129,4 +99,4 @@ def show_data_grid(data: pd.DataFrame | list | dict) -> None:
     df = _order_display_columns(df)
     df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
-    _render_fixed_table_html(df)
+    st.dataframe(df, use_container_width=True, hide_index=True)
