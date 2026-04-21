@@ -187,7 +187,7 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
             )
             or ""
         ),
-        # 결제는 주문(장바구니) 단위 1회 → 같은 주문의 상품줄마다 동일한 paymentDate가 반복되는 것이 정상.
+        # 결제는 주문(장바구니) 단위 1회 → 같은 주문번호의 상품주문(줄)마다 API가 동일한 paymentDate를 반복(가공 아님).
         # lastChangedDate는 결제 시각과 다를 수 있어 결제일시 대용으로 쓰지 않음.
         "paymentDate": _to_iso_datetime(
             _get_value(

@@ -27,7 +27,7 @@ class Order(Base):
     # 실제 결제 이벤트 시각(KST naive) — 의미상 paid_at. 매출 집계는 *_business_date 컬럼만 사용.
     payment_date: Mapped[datetime] = mapped_column(DateTime)
     order_date: Mapped[date] = mapped_column(Date, index=True)
-    # 결제 기준 영업일(레거시 호환: 동기화 시 payment_business_date와 동일하게 유지).
+    # 결제 기준 영업일(한국시간 16:00 컷, 레거시 호환: payment_business_date와 동일).
     business_date: Mapped[date] = mapped_column(Date, index=True)
     order_business_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     payment_business_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)

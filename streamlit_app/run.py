@@ -1,5 +1,4 @@
-"""Streamlit 진입점. 파일명을 `app.py`로 두면 최상위 모듈 `app`이 스크립트를 가리켜
-`import app.aggregation_display` 등이 깨지므로 `run.py`로 둔다."""
+"""Streamlit entry (not `app.py` — avoids shadowing the `app` package)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -80,7 +79,6 @@ def render_main_dashboard(today: date) -> None:
     top_df = load_top_products(today)
 
     if kpi_df.empty:
-        st.info("KPI 데이터가 없습니다.")
         return
 
     row = kpi_df.iloc[0]
@@ -90,9 +88,7 @@ def render_main_dashboard(today: date) -> None:
     c3.metric("총 이익", format_krw(row["total_profit"]))
 
     st.markdown("### Top 5 상품")
-    if top_df.empty:
-        st.info("오늘 기준 상품 데이터가 없습니다.")
-    else:
+    if not top_df.empty:
         show_data_grid(top_df)
 
 
@@ -100,7 +96,6 @@ def render_product_analysis(start_date: date | None, end_date: date | None) -> N
     st.subheader("상품 분석")
     df = load_product_analysis(start_date, end_date)
     if df.empty:
-        st.info("상품 분석 데이터가 없습니다.")
         return
 
     summary = (
@@ -136,7 +131,6 @@ def render_option_analysis(start_date: date | None, end_date: date | None) -> No
     st.subheader("옵션 분석")
     df = load_option_analysis(start_date, end_date)
     if df.empty:
-        st.info("옵션 분석 데이터가 없습니다.")
         return
 
     df = df.sort_values("orders", ascending=False)
@@ -158,9 +152,7 @@ def render_option_analysis(start_date: date | None, end_date: date | None) -> No
 
     risky = df[df["cancel_rate"] > 0.10].copy()
     st.markdown("### 위험 옵션 (취소율 > 10%)")
-    if risky.empty:
-        st.success("위험 옵션이 없습니다.")
-    else:
+    if not risky.empty:
         risky["cancel_rate_pct"] = risky["cancel_rate_pct"].map(
             lambda x: f"{x:,.2f}" if pd.notna(x) else ""
         )
@@ -174,9 +166,7 @@ def render_time_analysis(start_date: date | None, end_date: date | None) -> None
     col1, col2 = st.columns(2)
 
     with col1:
-        if hour_df.empty:
-            st.info("시간대 데이터가 없습니다.")
-        else:
+        if not hour_df.empty:
             fig_hour = px.bar(
                 hour_df,
                 x="hour_of_day",
@@ -187,9 +177,7 @@ def render_time_analysis(start_date: date | None, end_date: date | None) -> None
             st.plotly_chart(fig_hour, use_container_width=True)
 
     with col2:
-        if weekday_df.empty:
-            st.info("요일 데이터가 없습니다.")
-        else:
+        if not weekday_df.empty:
             weekday_df = weekday_df.copy()
             weekday_df["weekday"] = weekday_df["weekday_num"].map(WEEKDAY_LABELS).fillna("기타")
             fig_weekday = px.bar(
@@ -204,7 +192,6 @@ def render_time_analysis(start_date: date | None, end_date: date | None) -> None
 
 def main() -> None:
     st.set_page_config(page_title="이커머스 분석 대시보드", layout="wide")
-    # 백엔드 주문 동기화(10분)와 맞춰 데이터 갱신
     st_autorefresh(interval=10 * 60 * 1000, key="naver_modiba_autorefresh")
     st.title("이커머스 분석 대시보드")
 
@@ -220,14 +207,8 @@ def main() -> None:
         default_start = today - timedelta(days=30)
         start_date = st.date_input("시작일", value=default_start)
         end_date = st.date_input("종료일", value=today)
-        st.caption(
-            "집계: 매출은 `business_date`(KST 16:00 영업일 컷, 동기화 시 계산). "
-            "시간대 차트는 DB `payment_date`(KST naive) 그대로입니다."
-        )
-        st.caption("판매관리 집계 상태: 상태 제한 없음 (매출 집계일 기준)")
 
     if start_date and end_date and start_date > end_date:
-        st.error("시작일은 종료일보다 클 수 없습니다.")
         return
 
     if page == "Main Dashboard":

@@ -1,8 +1,4 @@
-"""표시 전용 그리드.
-
-Railway/FastAPI/DB로부터 받은 DataFrame·쿼리 결과는 **컬럼명·값을 변경하지 않는다**.
-`st.dataframe`에 넘기기 직전에만 `.copy()`에 한글 헤더·숫자 콤마 포맷을 적용한다.
-"""
+"""표시 전용 그리드 — HTML 테이블, 가로폭 50% 고정."""
 
 from __future__ import annotations
 
@@ -21,7 +17,6 @@ from column_map import COLUMN_DISPLAY_ORDER, COLUMN_MAP
 
 
 def _comma_format_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """숫자 dtype 컬럼만 천 단위 콤마 문자열로 변환."""
     out = df.copy()
     for c in out.columns:
         if pd.api.types.is_numeric_dtype(out[c]):
@@ -34,14 +29,12 @@ def _comma_format_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ensure_dataframe(data: pd.DataFrame | list | dict) -> pd.DataFrame:
-    """st.dataframe 직전에 항상 DataFrame으로 통일."""
     if isinstance(data, pd.DataFrame):
         return data
     return pd.DataFrame(data)
 
 
 def _order_display_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """COLUMN_DISPLAY_ORDER 순으로 앞에 두고, 나머지는 기존 열 순서를 유지해 뒤에 둔다."""
     if df.empty or not df.columns.size:
         return df
     seen: set[str] = set()
@@ -55,7 +48,6 @@ def _order_display_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _move_total_rows_to_bottom(df: pd.DataFrame) -> pd.DataFrame:
-    """'합계' 행이 있으면 항상 표 하단으로 이동."""
     if df.empty:
         return df
     total_mask = df.apply(
@@ -68,38 +60,21 @@ def _move_total_rows_to_bottom(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([body, total], ignore_index=True)
 
 
-def _style_total_rows(df: pd.DataFrame) -> pd.io.formats.style.Styler:
-    """'합계' 행 강조(굵게/배경색)."""
-    total_mask = df.apply(
-        lambda row: any(str(v).strip() == "합계" for v in row), axis=1
-    )
-
-    def _row_style(row: pd.Series) -> list[str]:
-        if bool(total_mask.loc[row.name]):
-            return ["font-weight: 700; background-color: #F4F6FA;" for _ in row]
-        return ["" for _ in row]
-
-    return df.style.apply(_row_style, axis=1)
-
-
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
 
 def _normalize_key_for_mapping(col: object) -> str:
-    """컬럼명 매핑용 표준 키(snake_case)로 정규화."""
     text = str(col)
     normalized = _CAMEL_BOUNDARY_RE.sub("_", text).replace("-", "_")
     return normalized.strip().lower()
 
 
 def _to_display_column_name(col: object) -> str:
-    """원본 이름 유지 + snake/camel 케이스 모두 COLUMN_MAP에서 조회."""
     original = str(col)
     return COLUMN_MAP.get(original, COLUMN_MAP.get(_normalize_key_for_mapping(original), original))
 
 
 def _make_unique_column_headers(df: pd.DataFrame) -> pd.DataFrame:
-    """st.data_editor는 한글 헤더까지 유일해야 함. 매핑 충돌 시 (2),(3) 접미사 부여."""
     seen: dict[str, int] = {}
     new_cols: list[str] = []
     for c in df.columns:
@@ -112,26 +87,46 @@ def _make_unique_column_headers(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _render_fixed_table_html(df: pd.DataFrame) -> None:
+    html_table = df.to_html(index=False, escape=True, classes="fixed-inner-table")
+    st.markdown(
+        f"""
+<style>
+.fixed-table-wrap {{
+    width: 50%;
+    min-width: 50%;
+    max-width: 50%;
+    overflow-x: hidden;
+}}
+.fixed-table-wrap table {{
+    width: 100%;
+    table-layout: fixed;
+}}
+.fixed-table-wrap th, .fixed-table-wrap td {{
+    text-align: center;
+    vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+</style>
+<div class="fixed-table-wrap">
+{html_table}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def show_summary_table(data: pd.DataFrame | list | dict) -> None:
-    """소형 요약(orders/daily_summary 등): show_data_grid와 동일."""
     show_data_grid(data)
 
 
 def show_data_grid(data: pd.DataFrame | list | dict) -> None:
-    """일반 표: 인자로 받은 DataFrame/객체는 변형하지 않고, 복사본 헤더만 한글화 후 표시."""
     df_src = _ensure_dataframe(data)
-    # 원본(동일 객체) 컬럼은 절대 덮어쓰지 않음 — 항상 사본에만 표시명 반영
     df = df_src.copy()
-    # `df.rename(columns=COLUMN_MAP)` 는 서로 다른 열이 같은 한글로 매핑될 때 pandas가
-    # 동일한 표시명을 여러 열에 붙여 data_editor가 실패한다. 열 단위 매핑만 사용한다.
     df.columns = [_to_display_column_name(col) for col in df.columns]
     df = _make_unique_column_headers(df)
     df = _order_display_columns(df)
     df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
-    st.data_editor(
-        _style_total_rows(df),
-        use_container_width=True,
-        hide_index=True,
-        disabled=True,
-    )
+    _render_fixed_table_html(df)

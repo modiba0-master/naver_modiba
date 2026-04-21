@@ -33,9 +33,10 @@ def is_valid_order_status(value: str) -> bool:
 
 
 def to_kst_naive(dt: datetime) -> datetime:
-    """DB 저장용 KST naive. naive는 네이버가 이미 KST로 준 벽시계로 간주(변환 없음).
+    """DB 저장용 한국시간 벽시계(naive).
 
-    timezone-aware(UTC·+09:00 등)는 Asia/Seoul 로 변환한 뒤 tzinfo 제거.
+    네이버가 내려주는 **타임존 없는** 결제일시는 이미 한국시간으로 간주해 숫자 그대로 둔다.
+    UTC(`Z`) 등만 서울 시각으로 맞춘 뒤 naive로 저장(한국시간 벽시계와 동일하게 맞추기 위함).
     """
     if dt.tzinfo is None:
         return dt
@@ -43,18 +44,24 @@ def to_kst_naive(dt: datetime) -> datetime:
 
 
 def parse_payment_datetime_string(value: str) -> datetime:
-    """`paymentDate` 문자열 파싱 후 KST naive (`payment_date` 컬럼에 저장)."""
+    """`paymentDate` 파싱 후 한국시간 naive로 저장 (`payment_date`). 네이버 기본값은 이미 한국시간."""
     s = str(value).strip()
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     return to_kst_naive(dt)
 
 
-def calculate_business_date(payment_dt: datetime) -> date:
-    """영업일: KST 기준 00:00~15:59 → 같은 날, 16:00~23:59 → 다음 날.
+def calculate_business_date(event_dt: datetime) -> date:
+    """매출 집계일(영업일): **한국시간 벽시계** 기준 16:00 컷.
 
-    동기화(및 `recompute_business_dates`)에서만 계산. 집계는 저장된 `*_business_date`만 사용.
+    - 00:00~15:59 → 같은 날 영업일
+    - 16:00~23:59 → 익일 영업일  
+    즉 전일 16:00~당일 15:59 결제가 `business_date` = 당일로 묶인다.
+
+    네이버 결제일시는 이미 한국시간이므로, 저장된 시각 숫자에 위 규칙만 적용한다(달력일만 잘라 쓰지 않음).
+
+    동기화·`recompute_business_dates`에서만 계산. 집계는 `*_business_date` 컬럼만 사용.
     """
-    dt = to_kst_naive(payment_dt)
+    dt = to_kst_naive(event_dt)
     if dt.hour >= 16:
         dt = dt + timedelta(days=1)
     return dt.date()
