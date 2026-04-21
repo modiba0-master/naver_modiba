@@ -24,10 +24,17 @@ class Order(Base):
     receiver_name: Mapped[str] = mapped_column(String(120))
     address: Mapped[str] = mapped_column(String(255))
     order_status: Mapped[str] = mapped_column(String(50), default="신규주문")
-    # 실제 결제 이벤트 시각(KST naive). 매출 집계는 `business_date`만 사용(DATE(payment_date) 금지).
+    # 실제 결제 이벤트 시각(KST naive) — 의미상 paid_at. 매출 집계는 *_business_date 컬럼만 사용.
     payment_date: Mapped[datetime] = mapped_column(DateTime)
     order_date: Mapped[date] = mapped_column(Date, index=True)
+    # 결제 기준 영업일(레거시 호환: 동기화 시 payment_business_date와 동일하게 유지).
     business_date: Mapped[date] = mapped_column(Date, index=True)
+    order_business_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    payment_business_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    shipping_business_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    refund_amount: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_amount: Mapped[int] = mapped_column(Integer, default=0)
+    net_revenue: Mapped[int] = mapped_column(Integer, default=0)
     ordered_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, default=None
     )

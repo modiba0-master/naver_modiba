@@ -42,3 +42,14 @@ def test_analytics_endpoints(client, db_session, monkeypatch):
     assert margin_response.status_code == 200
     body = margin_response.json()
     assert "total_revenue" in body
+
+    hour_response = client.get("/analytics/revenue-by-hour")
+    assert hour_response.status_code == 200
+    assert "items" in hour_response.json()
+
+    heat_response = client.get("/analytics/revenue-heatmap")
+    assert heat_response.status_code == 200
+    assert "items" in heat_response.json()
+
+    raw_payment = client.get("/analytics/orders-raw", params={"revenue_basis": "payment"})
+    assert raw_payment.status_code == 200

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Order
 from app.services.naver import fetch_naver_orders
+from app.services.revenue_compute import compute_net_revenue
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,35 @@ def parse_payment_datetime_string(value: str) -> datetime:
 def calculate_business_date(payment_dt: datetime) -> date:
     """영업일: KST 기준 00:00~15:59 → 같은 날, 16:00~23:59 → 다음 날.
 
-    동기화(및 `recompute_business_dates`)에서만 계산. 집계는 저장된 `business_date`만 사용.
+    동기화(및 `recompute_business_dates`)에서만 계산. 집계는 저장된 `*_business_date`만 사용.
     """
     dt = to_kst_naive(payment_dt)
     if dt.hour >= 16:
         dt = dt + timedelta(days=1)
     return dt.date()
+
+
+def _apply_revenue_and_business_dates(
+    order: Order,
+    *,
+    payment_stored: datetime,
+    ordered_at: datetime | None,
+    shipped_at: datetime | None,
+) -> None:
+    """결제·주문·발송 시각으로 세 영업일과 레거시 `business_date`를 맞춘다."""
+    payment_bd = calculate_business_date(payment_stored)
+    order.payment_date = payment_stored
+    order.business_date = payment_bd
+    order.payment_business_date = payment_bd
+    order.order_business_date = (
+        calculate_business_date(ordered_at) if ordered_at else payment_bd
+    )
+    order.shipping_business_date = (
+        calculate_business_date(shipped_at) if shipped_at else None
+    )
+    order.net_revenue = compute_net_revenue(
+        order.amount, order.refund_amount, order.cancel_amount
+    )
 
 
 def _api_datetime_for_db(value: datetime | None) -> datetime | None:
@@ -81,11 +105,17 @@ def _parse_api_datetime(value: Any) -> datetime | None:
 
 def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
     """동일 상품주문번호 재동기화 시 결제·발주·발송·주문일시·상태를 보강한다."""
+    ra = int(payload.get("refundAmount") or 0)
+    ca = int(payload.get("cancelAmount") or 0)
+    order.refund_amount = ra
+    order.cancel_amount = ca
+
     pd_raw = payload.get("paymentDate")
     if pd_raw:
         payment_stored = parse_payment_datetime_string(str(pd_raw))
-        order.payment_date = payment_stored
-        order.business_date = calculate_business_date(payment_stored)
+    else:
+        payment_stored = order.payment_date
+
     od = _parse_api_datetime(payload.get("orderDate"))
     if od:
         order.ordered_at = _api_datetime_for_db(od)
@@ -96,6 +126,14 @@ def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
     sd = _parse_api_datetime(payload.get("sendDate"))
     if sd:
         order.shipped_at = _api_datetime_for_db(sd)
+
+    _apply_revenue_and_business_dates(
+        order,
+        payment_stored=payment_stored,
+        ordered_at=order.ordered_at,
+        shipped_at=order.shipped_at,
+    )
+
     st = normalize_order_status(payload.get("orderStatus", ""))
     if is_valid_order_status(st):
         order.order_status = st
@@ -146,7 +184,11 @@ def sync_orders(db: Session) -> int:
         except ValueError:
             skipped_missing_payment += 1
             continue
-        business_date = calculate_business_date(payment_stored)
+
+        refund_amount = int(payload.get("refundAmount") or 0)
+        cancel_amount = int(payload.get("cancelAmount") or 0)
+        net_revenue = compute_net_revenue(amount, refund_amount, cancel_amount)
+
         ordered_at = _api_datetime_for_db(_parse_api_datetime(payload.get("orderDate")))
         placed_order_at = _api_datetime_for_db(
             _parse_api_datetime(payload.get("placeOrderDate"))
@@ -154,6 +196,10 @@ def sync_orders(db: Session) -> int:
         shipped_at = _api_datetime_for_db(_parse_api_datetime(payload.get("sendDate")))
         order_calendar = ordered_at.date() if ordered_at else payment_stored.date()
         content_no = (payload.get("contentOrderNo") or "").strip() or None
+
+        payment_bd = calculate_business_date(payment_stored)
+        order_bd = calculate_business_date(ordered_at) if ordered_at else payment_bd
+        ship_bd = calculate_business_date(shipped_at) if shipped_at else None
 
         order = Order(
             order_id=order_id,
@@ -169,7 +215,13 @@ def sync_orders(db: Session) -> int:
             order_status=order_status,
             payment_date=payment_stored,
             order_date=order_calendar,
-            business_date=business_date,
+            business_date=payment_bd,
+            order_business_date=order_bd,
+            payment_business_date=payment_bd,
+            shipping_business_date=ship_bd,
+            refund_amount=refund_amount,
+            cancel_amount=cancel_amount,
+            net_revenue=net_revenue,
             ordered_at=ordered_at,
             placed_order_at=placed_order_at,
             shipped_at=shipped_at,

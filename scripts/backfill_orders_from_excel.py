@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from app.database import SessionLocal, ensure_orders_schema, engine
 from app.models import Order
+from app.services.revenue_compute import compute_net_revenue
 from app.services.sync import calculate_business_date, is_valid_order_status, normalize_order_status
 
 
@@ -220,6 +221,16 @@ def run_backfill(order_manage_path: str, delivery_status_path: str, start: datet
                         payment_date=row.payment_date,
                         order_date=row.order_date.date(),
                         business_date=calculate_business_date(row.payment_date),
+                        payment_business_date=calculate_business_date(row.payment_date),
+                        order_business_date=calculate_business_date(row.order_date),
+                        shipping_business_date=(
+                            calculate_business_date(row.shipped_at)
+                            if row.shipped_at
+                            else None
+                        ),
+                        refund_amount=0,
+                        cancel_amount=0,
+                        net_revenue=compute_net_revenue(row.amount, 0, 0),
                         ordered_at=row.order_date,
                         placed_order_at=row.placed_order_at,
                         shipped_at=row.shipped_at,

@@ -98,6 +98,28 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
         "totalPaymentAmount",
         "amount",
     ) or 0
+    refund_raw = _get_value(
+        item,
+        "productOrder.refundAmount",
+        "productOrder.totalRefundAmount",
+        "refundAmount",
+        "totalRefundAmount",
+        "refundPaymentAmount",
+    )
+    cancel_raw = _get_value(
+        item,
+        "productOrder.cancelAmount",
+        "cancelAmount",
+        "cancelPaymentAmount",
+    )
+    try:
+        refund_amt = int(refund_raw or 0)
+    except (TypeError, ValueError):
+        refund_amt = 0
+    try:
+        cancel_amt = int(cancel_raw or 0)
+    except (TypeError, ValueError):
+        cancel_amt = 0
     return {
         # 상품주문번호(줄 단위 1:1). order.orderId 등 상위 주문번호와 혼동하지 않도록 productOrder 우선.
         "orderId": str(
@@ -126,6 +148,8 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
         "optionName": str(option_name),
         "quantity": int(_get_value(item, "productOrder.quantity", "quantity", "orderQuantity") or quantity),
         "paymentAmount": int(amount),
+        "refundAmount": refund_amt,
+        "cancelAmount": cancel_amt,
         "orderStatus": _normalize_status(
             _get_value(
                 item,

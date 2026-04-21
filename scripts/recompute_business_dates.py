@@ -1,13 +1,11 @@
-"""orders.business_date 재계산.
+"""orders의 영업일·순매출 재계산.
 
-- DB `payment_date`는 KST naive 결제 시각을 전제로,
-  `calculate_business_date`(16:00 KST 영업일 컷)로 `business_date`만 다시 맞춘다.
-- 동일 결제 시각이 여러 행에 보이는 것은 **손상이 아니라**, 같은 주문번호(장바구니)에 상품줄이
-  여러 개일 때 결제 시각이 복제되는 정상 동작이다.
+- `payment_date`(KST naive)로 `business_date` / `payment_business_date` / `order_business_date` / `shipping_business_date`를 맞춘다.
+- `net_revenue` = amount - refund - cancel (상한 적용).
 
 사용 (프로젝트 루트에서, DATABASE_URL·.env가 맞을 때):
 
-  python scripts/recompute_business_dates.py
+    python scripts/recompute_business_dates.py
 
 """
 
@@ -24,6 +22,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import Order
+from app.services.revenue_compute import compute_net_revenue
 from app.services.sync import calculate_business_date
 
 
@@ -35,9 +34,22 @@ def main() -> int:
         for o in rows:
             if o.payment_date is None:
                 continue
-            new_bd = calculate_business_date(o.payment_date)
-            if o.business_date != new_bd:
-                o.business_date = new_bd
+            pay_bd = calculate_business_date(o.payment_date)
+            order_bd = calculate_business_date(o.ordered_at) if o.ordered_at else pay_bd
+            ship_bd = calculate_business_date(o.shipped_at) if o.shipped_at else None
+            nr = compute_net_revenue(o.amount, o.refund_amount, o.cancel_amount)
+            if (
+                o.business_date != pay_bd
+                or o.payment_business_date != pay_bd
+                or o.order_business_date != order_bd
+                or o.shipping_business_date != ship_bd
+                or o.net_revenue != nr
+            ):
+                o.business_date = pay_bd
+                o.payment_business_date = pay_bd
+                o.order_business_date = order_bd
+                o.shipping_business_date = ship_bd
+                o.net_revenue = nr
                 updated += 1
         db.commit()
         print(f"recompute_business_dates: rows={len(rows)} updated={updated}")

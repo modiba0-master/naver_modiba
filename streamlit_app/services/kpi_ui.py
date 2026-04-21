@@ -11,7 +11,7 @@ SELLER_DB_OPTIMIZATION_MD = """
 
 | 구분 | 제안 |
 |------|------|
-| **집계 키** | `business_date`만 사용 (`DATE(payment_date)`·SQL 재계산 금지). 인덱스로 기간 `SUM(amount)` 최적화 |
+| **집계 키** | `order_business_date` / `payment_business_date` / `shipping_business_date` 중 선택 (`DATE(paid_at)` 금지). `SUM(net_revenue)` |
 | **일별 롤업** | `orders` 풀스캔 대신 `daily_summary` 등 **일·상품 단위 집계 테이블** 유지 또는 야간 배치로 갱신 |
 | **주문 묶음** | `content_order_no`(주문번호) 인덱스로 동일 결제·다중 상품줄 분석 |
 | **라인 식별** | `order_id`(상품주문번호) UNIQUE로 중복 방지·동기화 upsert |
@@ -70,6 +70,6 @@ def render_kpi_period_header(
     st.markdown(
         f'<p style="font-size:0.95rem;color:#5f6368;margin-bottom:0.4rem;">선택 기간 · '
         f'<b>{kpi_start_date}</b> ~ <b>{kpi_end_date}</b> '
-        f"({period_days}일) · 기간 총 매출 <b>{whole['total_amount']:,.0f}원</b></p>",
+        f"({period_days}일) · 기간 순매출 <b>{whole['total_amount']:,.0f}원</b></p>",
         unsafe_allow_html=True,
     )

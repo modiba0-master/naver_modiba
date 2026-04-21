@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List
+from typing import List, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +23,12 @@ class OrderOut(BaseModel):
     ordered_at: datetime | None = None
     placed_order_at: datetime | None = None
     shipped_at: datetime | None = None
+    order_business_date: date | None = None
+    payment_business_date: date | None = None
+    shipping_business_date: date | None = None
+    refund_amount: int = 0
+    cancel_amount: int = 0
+    net_revenue: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -39,14 +45,18 @@ class OrdersByDateResponse(BaseModel):
 
 
 class OrderRawItem(BaseModel):
-    """`date`는 저장된 `business_date`(16:00 KST 영업일 규칙, 동기화 시 계산). `payment_date`는 실제 결제 시각(KST naive).
-    `aggregation_window_kst`: 집계일 안내 문구(상세 표용, 필드명은 레거시).
-    `order_calendar_date`: 주문일(달력). `order_id`: 상품주문번호. `content_order_no`: 주문번호(동일 결제에 여러 상품줄)."""
+    """`date`는 요청한 `revenue_basis`에 대응하는 영업일. `business_date`는 결제 기준 영업일(레거시 호환).
+
+    순매출 집계는 `net_revenue`를 사용한다."""
 
     order_id: str
     content_order_no: str | None = None
     date: date
+    revenue_basis: Literal["payment", "order", "shipping"] = "payment"
     business_date: date
+    order_business_date: date | None = None
+    payment_business_date: date | None = None
+    shipping_business_date: date | None = None
     aggregation_window_kst: str
     order_calendar_date: date
     payment_date: datetime
@@ -61,6 +71,10 @@ class OrderRawItem(BaseModel):
     option_name: str
     quantity: int
     amount: int
+    refund_amount: int = 0
+    cancel_amount: int = 0
+    net_revenue: int = 0
+    revenue_status: str = "PAID"
     order_status: str
 
 
@@ -70,3 +84,25 @@ class OrdersRawResponse(BaseModel):
 
 class RevenueResponse(BaseModel):
     total_revenue: Decimal = Field(default=0)
+
+
+class HourRevenueRow(BaseModel):
+    hour: int
+    orders: int
+    revenue: Decimal
+
+
+class HourRevenueResponse(BaseModel):
+    items: List[HourRevenueRow]
+
+
+class HeatmapCell(BaseModel):
+    """day_of_week: 0=월 … 6=일 (Python weekday와 동일)."""
+
+    day_of_week: int
+    hour: int
+    revenue: Decimal
+
+
+class HeatmapResponse(BaseModel):
+    items: List[HeatmapCell]

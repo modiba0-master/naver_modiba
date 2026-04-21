@@ -14,7 +14,7 @@ def kpi_aggregate(df: pd.DataFrame) -> dict[str, float]:
     """
     KPI 집계 (조회 필터 반영된 df만 사용).
 
-    - total_amount: amount 합계
+    - total_amount: `net_revenue` 합계(있으면), 없으면 `amount` 합계
     - order_count: order_id 서로 다른 값 개수 (컬럼 없으면 행 수)
     - total_quantity: quantity 합계
     - customer_count: customer_id nunique
@@ -28,7 +28,8 @@ def kpi_aggregate(df: pd.DataFrame) -> dict[str, float]:
             "customer_count": 0.0,
             "avg_order_value": 0.0,
         }
-    total_amount = float(df["amount"].sum())
+    rev_col = "net_revenue" if "net_revenue" in df.columns else "amount"
+    total_amount = float(pd.to_numeric(df[rev_col], errors="coerce").fillna(0).sum())
     total_quantity = float(df["quantity"].sum())
 
     if "order_id" in df.columns:
@@ -67,8 +68,9 @@ def split_filtered_date_halves(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataF
 def daily_avg_sales(df: pd.DataFrame) -> float:
     if df.empty:
         return 0.0
+    rev_col = "net_revenue" if "net_revenue" in df.columns else "amount"
     n = max(1, int(df["date"].dt.date.nunique()))
-    return float(df["amount"].sum()) / n
+    return float(pd.to_numeric(df[rev_col], errors="coerce").fillna(0).sum()) / n
 
 
 def expected_sales_from_recent_7d(df: pd.DataFrame) -> float:
@@ -80,7 +82,8 @@ def expected_sales_from_recent_7d(df: pd.DataFrame) -> float:
     """
     if df.empty:
         return 0.0
-    daily_sales = df.groupby(df["date"].dt.date)["amount"].sum()
+    rev_col = "net_revenue" if "net_revenue" in df.columns else "amount"
+    daily_sales = df.groupby(df["date"].dt.date)[rev_col].sum()
     if daily_sales.empty:
         return 0.0
     return float(daily_sales.tail(7).mean())

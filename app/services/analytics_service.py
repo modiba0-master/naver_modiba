@@ -1,31 +1,61 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.aggregation_display import format_kst_sales_window
 from app.models import Order
-from app.schemas import OrderRawItem, OrdersByDateItem
+from app.schemas import (
+    HeatmapCell,
+    HourRevenueRow,
+    OrderRawItem,
+    OrdersByDateItem,
+)
+from app.services.revenue_compute import derive_revenue_status
 from app.services.sync import is_valid_order_status, normalize_order_status
+
+RevenueBasis = Literal["payment", "order", "shipping"]
+
+
+def _effective_business_date(row: Order, basis: RevenueBasis) -> date | None:
+    if basis == "order":
+        return row.order_business_date or row.payment_business_date or row.business_date
+    if basis == "shipping":
+        return row.shipping_business_date
+    return row.payment_business_date or row.business_date
+
+
+def _row_in_basis(row: Order, basis: RevenueBasis) -> bool:
+    if basis == "shipping":
+        return row.shipping_business_date is not None
+    return True
 
 
 def get_orders_by_date(
-    db: Session, start_date: datetime | None, end_date: datetime | None
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    revenue_basis: RevenueBasis = "payment",
 ) -> list[OrdersByDateItem]:
-    raw_items = get_orders_raw(db, start_date=start_date, end_date=end_date)
+    raw_items = get_orders_raw(
+        db,
+        start_date=start_date,
+        end_date=end_date,
+        revenue_basis=revenue_basis,
+    )
     grouped: dict[date, dict[str, Decimal | int]] = {}
 
     for item in raw_items:
-        day = item.date  # 매출 집계일 = business_date (저장 컬럼만 사용)
+        day = item.date
         if day not in grouped:
             grouped[day] = {
                 "total_amount": Decimal(0),
                 "total_quantity": 0,
             }
         grouped[day]["total_amount"] = Decimal(grouped[day]["total_amount"]) + Decimal(
-            item.amount
+            item.net_revenue
         )
         grouped[day]["total_quantity"] = int(grouped[day]["total_quantity"]) + int(
             item.quantity
@@ -45,7 +75,10 @@ def get_orders_by_date(
 
 
 def get_orders_raw(
-    db: Session, start_date: datetime | None, end_date: datetime | None
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    revenue_basis: RevenueBasis = "payment",
 ) -> list[OrderRawItem]:
     stmt = select(Order).order_by(Order.payment_date.desc())
 
@@ -57,7 +90,12 @@ def get_orders_raw(
         if not is_valid_order_status(normalized_status):
             continue
 
-        bd = row.business_date
+        if not _row_in_basis(row, revenue_basis):
+            continue
+
+        bd = _effective_business_date(row, revenue_basis)
+        if bd is None:
+            continue
 
         if start_date and bd < start_date.date():
             continue
@@ -69,11 +107,18 @@ def get_orders_raw(
             continue
         seen_orders.add(order_id)
 
+        pay_bd = row.payment_business_date or row.business_date
+        rs = derive_revenue_status(row.net_revenue, row.amount)
+
         item: dict = {}
         item["order_id"] = row.order_id
         item["content_order_no"] = row.content_order_no
         item["date"] = bd
-        item["business_date"] = bd
+        item["revenue_basis"] = revenue_basis
+        item["business_date"] = pay_bd
+        item["order_business_date"] = row.order_business_date
+        item["payment_business_date"] = row.payment_business_date
+        item["shipping_business_date"] = row.shipping_business_date
         item["aggregation_window_kst"] = format_kst_sales_window(bd)
         item["order_calendar_date"] = row.order_date
         item["payment_date"] = row.payment_date
@@ -88,6 +133,10 @@ def get_orders_raw(
         item["option_name"] = row.option_name
         item["quantity"] = row.quantity
         item["amount"] = row.amount
+        item["refund_amount"] = row.refund_amount
+        item["cancel_amount"] = row.cancel_amount
+        item["net_revenue"] = row.net_revenue
+        item["revenue_status"] = rs
         item["order_status"] = normalized_status
 
         filtered_items.append(item)
@@ -97,7 +146,79 @@ def get_orders_raw(
 
 
 def get_total_revenue(
-    db: Session, start_date: datetime | None, end_date: datetime | None
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    revenue_basis: RevenueBasis = "payment",
 ) -> Decimal:
-    raw_items = get_orders_raw(db, start_date=start_date, end_date=end_date)
-    return Decimal(sum(item.amount for item in raw_items))
+    raw_items = get_orders_raw(
+        db,
+        start_date=start_date,
+        end_date=end_date,
+        revenue_basis=revenue_basis,
+    )
+    return Decimal(sum(item.net_revenue for item in raw_items))
+
+
+def _orders_for_payment_window(
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> list[Order]:
+    """시간대·히트맵: 기간 필터는 `payment_business_date`, 시각은 `payment_date`만 사용."""
+    stmt = select(Order).order_by(Order.payment_date.desc())
+    rows = db.scalars(stmt).all()
+    out: list[Order] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not is_valid_order_status(normalize_order_status(row.order_status)):
+            continue
+        bd = row.payment_business_date or row.business_date
+        if start_date and bd < start_date.date():
+            continue
+        if end_date and bd > end_date.date():
+            continue
+        if row.order_id in seen:
+            continue
+        seen.add(row.order_id)
+        out.append(row)
+    return out
+
+
+def get_revenue_by_hour(
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> list[HourRevenueRow]:
+    rows = _orders_for_payment_window(db, start_date, end_date)
+    buckets: dict[int, dict[str, Decimal]] = {}
+    for row in rows:
+        h = row.payment_date.hour
+        if h not in buckets:
+            buckets[h] = {"revenue": Decimal(0), "orders": 0}
+        buckets[h]["revenue"] += Decimal(row.net_revenue)
+        buckets[h]["orders"] += 1
+    return [
+        HourRevenueRow(hour=h, orders=buckets[h]["orders"], revenue=buckets[h]["revenue"])
+        for h in sorted(buckets.keys())
+    ]
+
+
+def get_revenue_heatmap(
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> list[HeatmapCell]:
+    """요일(`payment_business_date`) × 시(`payment_date` 시각) × 순매출."""
+    rows = _orders_for_payment_window(db, start_date, end_date)
+    cells: dict[tuple[int, int], Decimal] = {}
+    for row in rows:
+        bd = row.payment_business_date or row.business_date
+        dow = bd.weekday()
+        hr = row.payment_date.hour
+        key = (dow, hr)
+        cells[key] = cells.get(key, Decimal(0)) + Decimal(row.net_revenue)
+    return [
+        HeatmapCell(day_of_week=dow, hour=hr, revenue=rev)
+        for (dow, hr), rev in sorted(cells.items())
+    ]

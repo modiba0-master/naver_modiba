@@ -70,7 +70,10 @@ def _aggregate_kpi_daily(kpi_daily_table: pd.DataFrame) -> pd.DataFrame:
             ]
         )
     df = kpi_daily_table.copy()
-    df["_amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+    if "net_revenue" in df.columns:
+        df["_amount"] = pd.to_numeric(df["net_revenue"], errors="coerce").fillna(0.0)
+    else:
+        df["_amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     out_rows: list[dict] = []
     for d, g in df.groupby("date"):
         a = g["_amount"]
@@ -126,10 +129,11 @@ def product_group(product_name: str) -> str:
 
 
 @st.cache_data(ttl=60)
-def fetch_order_data(base_url: str) -> pd.DataFrame:
+def fetch_order_data(base_url: str, revenue_basis: str = "payment") -> pd.DataFrame:
     url = base_url.rstrip("/")
     response = httpx.get(
         f"{url}/analytics/orders-raw",
+        params={"revenue_basis": revenue_basis},
         timeout=30,
     )
     response.raise_for_status()
@@ -180,7 +184,7 @@ def get_today_summary(today: date) -> dict[str, int]:
                 """
                 SELECT
                     COUNT(*) AS order_count,
-                    COALESCE(SUM(amount), 0) AS total_sales
+                    COALESCE(SUM(net_revenue), 0) AS total_sales
                 FROM orders
                 WHERE business_date = :today
                 """
@@ -235,6 +239,10 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+    if "net_revenue" not in df.columns:
+        df["net_revenue"] = df["amount"]
+    else:
+        df["net_revenue"] = pd.to_numeric(df["net_revenue"], errors="coerce").fillna(0)
     df["multiplier"] = df["option_name"].apply(extract_multiplier)
     df["real_quantity"] = df["quantity"] * df["multiplier"]
     df["weight_unit"] = df["option_name"].apply(extract_weight_unit)
@@ -319,11 +327,23 @@ def main_content() -> None:
     with st.sidebar:
         st.header("API 설정")
         api_base_url = st.text_input("FastAPI 기본 URL", value=DEFAULT_API_BASE_URL).rstrip("/")
+        revenue_basis = st.selectbox(
+            "매출 집계 기준",
+            options=["payment", "order", "shipping"],
+            index=0,
+            format_func=lambda x: {
+                "payment": "결제 기준 (기본)",
+                "order": "주문 기준",
+                "shipping": "발송 기준",
+            }[x],
+            key="revenue_basis_select",
+            help="KPI·일자 표는 선택한 영업일(`*_business_date`)로 묶습니다. 발송 미완 주문은 발송 기준에서 제외됩니다.",
+        )
 
     data_loaded_at = ""
     data_loaded_mode = "live"
     try:
-        raw_df = fetch_order_data(api_base_url)
+        raw_df = fetch_order_data(api_base_url, revenue_basis)
         order_df = normalize_order_data(raw_df)
         st.session_state["last_good_order_df"] = order_df.copy()
         data_loaded_at = format_now_kst()
@@ -426,9 +446,10 @@ def main_content() -> None:
         )
         r1a, r1b, r1c, r1d = st.columns(4)
         r1a.metric(
-            f"기간 주문 금액 ({compare_info})",
+            f"기간 순매출 ({compare_info})",
             f"{whole['total_amount']:,.0f}원",
             _prev_delta(whole["total_amount"], prev_m["total_amount"]),
+            help="환불·취소 반영 net_revenue 합계.",
         )
         r1b.metric(
             f"상품주문 건수 ({compare_info})",
@@ -494,7 +515,7 @@ def main_content() -> None:
 
     chart_for_plot = daily_kpi.sort_values("date", ascending=True)
     if not chart_for_plot.empty:
-        st.caption("일자별 주문 금액 (막대)")
+        st.caption("일자별 순매출 (막대)")
         st.bar_chart(
             chart_for_plot.set_index("date_label")[["total_amount"]],
             use_container_width=True,
@@ -513,6 +534,67 @@ def main_content() -> None:
     daily_kpi = append_daily_total_row(daily_kpi)
 
     show_data_grid(daily_kpi)
+
+    st.markdown("---")
+    st.subheader("시간대별 순매출 (결제 시각 기준)")
+    st.caption(
+        "시간 버킷은 `payment_date`의 시(hour)만 사용합니다. "
+        "기간은 위 최근 7일과 동일한 매출 집계일 범위입니다."
+    )
+    try:
+        hr_resp = httpx.get(
+            f"{api_base_url}/analytics/revenue-by-hour",
+            params={
+                "start_date": kpi_daily_start.isoformat(),
+                "end_date": default_end.isoformat(),
+            },
+            timeout=30,
+        )
+        hr_resp.raise_for_status()
+        hitems = hr_resp.json().get("items") or []
+        if hitems:
+            hdf = pd.DataFrame(hitems)
+            hdf["revenue"] = pd.to_numeric(hdf["revenue"], errors="coerce").fillna(0)
+            st.bar_chart(
+                hdf.set_index("hour")[["revenue"]],
+                use_container_width=True,
+                height=220,
+            )
+        else:
+            st.info("시간대별 데이터가 없습니다.")
+    except Exception as exc:
+        st.warning(f"시간대별 API 조회 실패: {exc}")
+
+    st.subheader("요일 × 시간 순매출 (결제 기준)")
+    st.caption("요일은 `payment_business_date`, 시는 `payment_date` 기준입니다.")
+    try:
+        hm_resp = httpx.get(
+            f"{api_base_url}/analytics/revenue-heatmap",
+            params={
+                "start_date": kpi_daily_start.isoformat(),
+                "end_date": default_end.isoformat(),
+            },
+            timeout=30,
+        )
+        hm_resp.raise_for_status()
+        hm_items = hm_resp.json().get("items") or []
+        if hm_items:
+            hm = pd.DataFrame(hm_items)
+            hm["revenue"] = pd.to_numeric(hm["revenue"], errors="coerce").fillna(0)
+            pivot = hm.pivot_table(
+                index="day_of_week",
+                columns="hour",
+                values="revenue",
+                aggfunc="sum",
+                fill_value=0,
+            )
+            dow_labels = ["월", "화", "수", "목", "금", "토", "일"]
+            pivot.index = [dow_labels[i] for i in pivot.index]
+            st.dataframe(pivot, use_container_width=True)
+        else:
+            st.info("히트맵 데이터가 없습니다.")
+    except Exception as exc:
+        st.warning(f"히트맵 API 조회 실패: {exc}")
 
     st.markdown("---")
     st.markdown("## 분석 영역")
@@ -550,6 +632,10 @@ def main_content() -> None:
         st.warning("선택한 분석 조건에 맞는 데이터가 없습니다.")
         st.stop()
 
+    _rev_col = (
+        "net_revenue" if "net_revenue" in analysis_filtered_df.columns else "amount"
+    )
+
     tab_product_sales, tab_option_sales = st.tabs(["상품별 매출", "옵션별 매출"])
 
     with tab_product_sales:
@@ -557,7 +643,7 @@ def main_content() -> None:
         product_summary = (
             analysis_filtered_df.groupby("product_name", as_index=False)
             .agg(
-                total_amount=("amount", "sum"),
+                total_amount=(_rev_col, "sum"),
                 quantity=("quantity", "sum"),
                 real_quantity=("real_quantity", "sum"),
                 order_count=(
@@ -582,7 +668,7 @@ def main_content() -> None:
                     "weight_unit",
                     lambda s: next((x for x in s if str(x).strip()), ""),
                 ),
-                total_amount=("amount", "sum"),
+                total_amount=(_rev_col, "sum"),
                 quantity=("quantity", "sum"),
                 real_quantity=("real_quantity", "sum"),
                 converted_quantity=("converted_quantity", "sum"),
