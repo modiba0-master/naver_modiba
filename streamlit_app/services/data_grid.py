@@ -44,8 +44,13 @@ def _order_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     """COLUMN_DISPLAY_ORDER 순으로 앞에 두고, 나머지는 기존 열 순서를 유지해 뒤에 둔다."""
     if df.empty or not df.columns.size:
         return df
-    primary = [c for c in COLUMN_DISPLAY_ORDER if c in df.columns]
-    rest = [c for c in df.columns if c not in primary]
+    seen: set[str] = set()
+    primary: list[str] = []
+    for c in COLUMN_DISPLAY_ORDER:
+        if c in df.columns and c not in seen:
+            primary.append(c)
+            seen.add(c)
+    rest = [c for c in df.columns if c not in seen]
     return df[primary + rest]
 
 
