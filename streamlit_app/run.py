@@ -1,3 +1,5 @@
+"""Streamlit 진입점. 파일명을 `app.py`로 두면 최상위 모듈 `app`이 스크립트를 가리켜
+`import app.aggregation_display` 등이 깨지므로 `run.py`로 둔다."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -240,4 +242,3 @@ def main() -> None:
 
 if __name__ == "__main__" and not _RUN_WEB_DASHBOARD:
     main()
-

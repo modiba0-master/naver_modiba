@@ -7,7 +7,7 @@ alwaysApply: false
 # Streamlit 대시보드
 
 ## 진입점
-- `streamlit_app/dashboard.py`: `app.py`가 `runpy`로 로드할 수 있음. 루트 `dashboard.py`와 **중복 로직**이 있으면 한쪽만 고치지 말고, 공통은 `streamlit_app/services/`로 모으거나 양쪽 동기화 필요 여부를 확인한다.
+- `streamlit_app/dashboard.py`: `run.py`가 `runpy`로 로드할 수 있음(진입점 파일명을 `app.py`로 두면 패키지 `app/`과 충돌). 루트 `dashboard.py`와 **중복 로직**이 있으면 한쪽만 고치지 말고, 공통은 `streamlit_app/services/`로 모으거나 양쪽 동기화 필요 여부를 확인한다.
 
 ## 데이터
 - API: `httpx`로 백엔드 호출(예: `/analytics/orders-raw`). `timeout`·`raise_for_status()` 패턴 유지.
