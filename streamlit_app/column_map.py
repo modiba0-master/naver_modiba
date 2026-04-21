@@ -22,6 +22,10 @@ COLUMN_MAP: dict[str, str] = {
     "product_name": "상품명",
     "option_name": "옵션상품명",
     "order_date": "주문일(달력)",
+    "amount_sat": "토 주문금액",
+    "amount_sun": "일 주문금액",
+    "amount_mon": "월 주문금액",
+    "amount_other": "기타 주문금액",
     "total_amount": "주문금액",
     "total_quantity": "총 수량",
     "product_group": "상품군",
@@ -51,7 +55,10 @@ COLUMN_MAP: dict[str, str] = {
 
 COLUMN_DISPLAY_ORDER: list[str] = [
     "귀속일(달력)",
-    "주문금액",
+    "토 주문금액",
+    "일 주문금액",
+    "월 주문금액",
+    "기타 주문금액",
     "주문수량",
     "총 수량",
     "매출집계구간(KST)",

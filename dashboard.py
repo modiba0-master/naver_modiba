@@ -34,6 +34,53 @@ REQUIRED_COLUMNS = [
 KST = ZoneInfo("Asia/Seoul")
 
 
+def _aggregate_kpi_daily_by_payment_weekday(kpi_daily_table: pd.DataFrame) -> pd.DataFrame:
+    """귀속일별로 결제일시 KST 달력이 토·일·월인 주문금액만 분리 합산(기타는 화~금·미결제)."""
+    if kpi_daily_table.empty:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "amount_sat",
+                "amount_sun",
+                "amount_mon",
+                "amount_other",
+                "order_count",
+                "total_quantity",
+            ]
+        )
+    df = kpi_daily_table.copy()
+    pay = pd.to_datetime(df["payment_date"], errors="coerce")
+    if pay.dt.tz is None:
+        pay = pay.dt.tz_localize(KST, ambiguous="NaT", nonexistent="NaT")
+    else:
+        pay = pay.dt.tz_convert(KST)
+    df["_pay_wd"] = pay.dt.weekday
+    df["_amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+    out_rows: list[dict] = []
+    for d, g in df.groupby("date"):
+        wd = g["_pay_wd"]
+        a = g["_amount"]
+        sat = float(a[wd == 5].sum())
+        sun = float(a[wd == 6].sum())
+        mon = float(a[wd == 0].sum())
+        total = float(a.sum())
+        other = total - sat - sun - mon
+        oid = int(g["order_id"].astype(str).replace("", pd.NA).dropna().nunique())
+        tq = float(pd.to_numeric(g["quantity"], errors="coerce").fillna(0).sum())
+        out_rows.append(
+            {
+                "date": d,
+                "amount_sat": sat,
+                "amount_sun": sun,
+                "amount_mon": mon,
+                "amount_other": other,
+                "order_count": oid,
+                "total_quantity": tq,
+            }
+        )
+    return pd.DataFrame(out_rows)
+
+
 def format_krw(value: float | int) -> str:
     return f"{float(value):,.0f}원"
 
@@ -317,6 +364,10 @@ def main_content() -> None:
 
     st.markdown("")
     st.subheader("KPI 일자 테이블 (최근 7일, KST 매출 집계구간)")
+    st.caption(
+        "주문금액(토·일·월): 결제일시 KST **달력**이 토·일·월인 건만 합산. "
+        "기타는 화~금 결제 및 결제일시 없음. 주문수량·총 수량은 귀속일 구간 전체."
+    )
     kpi_daily_start = default_end - timedelta(days=6)
     kpi_daily_mask = (
         (order_df["date"].dt.date >= kpi_daily_start)
@@ -324,37 +375,38 @@ def main_content() -> None:
     )
     kpi_daily_table = order_df[kpi_daily_mask].copy()
     kpi_daily_table["date"] = kpi_daily_table["date"].dt.date
-    daily_kpi = kpi_daily_table.groupby("date", as_index=False).agg(
-        order_count=(
-            "order_id",
-            lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
-        ),
-        total_amount=("amount", "sum"),
-        total_quantity=("quantity", "sum"),
-    )
+    daily_kpi = _aggregate_kpi_daily_by_payment_weekday(kpi_daily_table)
     cal = pd.DataFrame(
         {"date": pd.date_range(kpi_daily_start, default_end, freq="D").date}
     )
     daily_kpi = cal.merge(daily_kpi, on="date", how="left")
+    for col in ("amount_sat", "amount_sun", "amount_mon", "amount_other", "total_quantity"):
+        daily_kpi[col] = pd.to_numeric(daily_kpi[col], errors="coerce").fillna(0.0)
     daily_kpi["order_count"] = daily_kpi["order_count"].fillna(0).astype(int)
-    daily_kpi["total_amount"] = pd.to_numeric(
-        daily_kpi["total_amount"], errors="coerce"
-    ).fillna(0.0)
-    daily_kpi["total_quantity"] = pd.to_numeric(
-        daily_kpi["total_quantity"], errors="coerce"
-    ).fillna(0.0)
     daily_kpi["aggregation_window_kst"] = daily_kpi["date"].map(
         format_kpi_daily_table_window_kst
     )
     daily_kpi = daily_kpi.sort_values("date", ascending=False)
     daily_kpi = daily_kpi[
-        ["date", "total_amount", "order_count", "total_quantity", "aggregation_window_kst"]
+        [
+            "date",
+            "amount_sat",
+            "amount_sun",
+            "amount_mon",
+            "amount_other",
+            "order_count",
+            "total_quantity",
+            "aggregation_window_kst",
+        ]
     ]
     total_row = pd.DataFrame(
         [
             {
                 "date": "합계",
-                "total_amount": daily_kpi["total_amount"].sum(),
+                "amount_sat": daily_kpi["amount_sat"].sum(),
+                "amount_sun": daily_kpi["amount_sun"].sum(),
+                "amount_mon": daily_kpi["amount_mon"].sum(),
+                "amount_other": daily_kpi["amount_other"].sum(),
                 "order_count": int(daily_kpi["order_count"].sum()),
                 "total_quantity": daily_kpi["total_quantity"].sum(),
                 "aggregation_window_kst": "—",
