@@ -5,3 +5,5 @@ plotly
 httpx
 sqlalchemy
 pymysql
+python-dotenv
+pydantic-settings

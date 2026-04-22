@@ -1,14 +1,18 @@
 import os
 import sys
 
-from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine.url import make_url
 
 from app.db_url_utils import encode_mysql_password_in_url, print_database_url_diagnostics
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 
 
 class Settings(BaseSettings):
