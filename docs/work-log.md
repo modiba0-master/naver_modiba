@@ -78,3 +78,16 @@
 - Railway checks:
   - confirmed outbound IP for web service: `182.208.212.186`
   - redeployed dashboard service successfully (`SUCCESS`) after dependency/import fixes.
+
+## 2026-04-22 Structure Simplification
+
+- Streamlit entrypoint 구조를 단순화:
+  - `streamlit_app/dashboard.py`를 단일 구현 파일로 고정
+  - `streamlit_app/run.py`는 `dashboard.py`로 위임하는 얇은 런처로 축소
+  - 루트 `dashboard.py`는 레거시 호환용 포워더로 축소
+- Import 경로 정리:
+  - `streamlit_app/services/data_grid.py`에서 `sys.path` 조작을 제거
+  - `streamlit_app.column_map` 명시 import로 통일
+- 검증:
+  - 수정 파일 컴파일 검사 통과
+  - linter 오류 없음

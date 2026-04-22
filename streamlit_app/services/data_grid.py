@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 import re
-import sys
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from column_map import COLUMN_DISPLAY_ORDER, COLUMN_MAP
+from streamlit_app.column_map import COLUMN_DISPLAY_ORDER, COLUMN_MAP
 
 _FULL_WIDTH_CSS_KEY = "_modiba_dataframe_full_width_css"
 

@@ -7,8 +7,8 @@
 | 경로 | 역할 |
 |------|------|
 | `app/` | FastAPI, 라우터(`routers/`), 모델, `services/`(동기화·네이버·분석) |
-| `streamlit_app/` | Streamlit UI — `app.py`, `dashboard.py`, `services/`(쿼리·DB·그리드) |
-| `dashboard.py` (루트) | 별도 진입/레거시 가능 — `streamlit_app`과 중복 시 동시 수정 검토 |
+| `streamlit_app/` | Streamlit UI — `dashboard.py`(실구현), `run.py`(배포 엔트리), `services/`(쿼리·DB·그리드) |
+| `dashboard.py` (루트) | 레거시 호환용 포워더(실구현 없음) — `streamlit_app/dashboard.py`로 위임 |
 | `tests/` | API·서비스 테스트 |
 | `naver_commerce_proxy/` | 프록시/별도 서비스 모듈 |
 

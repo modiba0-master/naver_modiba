@@ -7,7 +7,9 @@ alwaysApply: false
 # Streamlit 대시보드
 
 ## 진입점
-- `streamlit_app/dashboard.py`: `run.py`가 `runpy`로 로드할 수 있음(진입점 파일명을 `app.py`로 두면 패키지 `app/`과 충돌). 루트 `dashboard.py`와 **중복 로직**이 있으면 한쪽만 고치지 말고, 공통은 `streamlit_app/services/`로 모으거나 양쪽 동기화 필요 여부를 확인한다.
+- 실제 구현은 `streamlit_app/dashboard.py` 한 곳만 수정한다.
+- 배포 진입은 `streamlit_app/run.py` (`streamlit run run.py`)이며 `runpy`로 `dashboard.py`를 로드한다.
+- 루트 `dashboard.py`는 레거시 호환용 포워더이므로 기능 로직을 추가하지 않는다.
 
 ## 데이터
 - API: `httpx`로 백엔드 호출(예: `/analytics/orders-raw`). `timeout`·`raise_for_status()` 패턴 유지.
