@@ -507,6 +507,59 @@ def _build_lookback_windows(now_kst: datetime, total_from: datetime) -> list[tup
     return windows
 
 
+def _query_product_orders_by_ids(
+    client: httpx.Client, access_token: str, product_order_ids: list[str]
+) -> list[dict[str, Any]]:
+    """query API를 청크/재시도로 호출해 상세 주문 필드를 안정적으로 수집한다."""
+    import logging as _logging
+    import time as _time
+
+    _log = _logging.getLogger(__name__)
+    out: list[dict[str, Any]] = []
+    chunk_size = 300
+    for i in range(0, len(product_order_ids), chunk_size):
+        part = product_order_ids[i : i + chunk_size]
+        last_resp: httpx.Response | None = None
+        for attempt in range(_RATE_LIMIT_RETRY):
+            resp = client.post(
+                "/external/v1/pay-order/seller/product-orders/query",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json={"productOrderIds": part},
+            )
+            last_resp = resp
+            _log_naver_403(resp)
+            _print_naver_trace_from_json(resp)
+            if resp.status_code == 429:
+                wait = _RATE_LIMIT_SLEEP * (attempt + 1)
+                _log.warning(
+                    "product-orders/query Rate Limit(429); %.1fs 후 재시도 (%d/%d)",
+                    wait,
+                    attempt + 1,
+                    _RATE_LIMIT_RETRY,
+                )
+                _time.sleep(wait)
+                continue
+            if resp.status_code >= 500:
+                wait = _RATE_LIMIT_SLEEP * (attempt + 1)
+                _log.warning(
+                    "product-orders/query %s; %.1fs 후 재시도 (%d/%d)",
+                    resp.status_code,
+                    wait,
+                    attempt + 1,
+                    _RATE_LIMIT_RETRY,
+                )
+                _time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            out.extend(_extract_items(resp.json()))
+            break
+        else:
+            if last_resp is None:
+                raise RuntimeError("product-orders/query 상세조회: 응답 없음")
+            _raise_http_error("product-orders/query 상세조회 재시도 소진", last_resp)
+    return out
+
+
 def _fetch_raw_orders_payment_window(
     client: httpx.Client,
     access_token: str,
@@ -609,15 +662,7 @@ def _fetch_naver_orders_via_last_changed(*, lookback_hours: int | None = None) -
 
         all_order_nos = list(dict.fromkeys(all_order_nos))
 
-        detail_response = client.post(
-            "/external/v1/pay-order/seller/product-orders/query",
-            headers={"Authorization": f"Bearer {access_token}"},
-            json={"productOrderIds": all_order_nos},
-        )
-        _log_naver_403(detail_response)
-        _print_naver_trace_from_json(detail_response)
-        detail_response.raise_for_status()
-        raw_items = _extract_items(detail_response.json())
+        raw_items = _query_product_orders_by_ids(client, access_token, all_order_nos)
 
         normalized = [_to_internal_order(item) for item in raw_items]
         return [item for item in normalized if item["orderId"]]
@@ -680,20 +725,9 @@ def _fetch_naver_orders_via_payment_datetime(
 
     # PAYED_DATETIME list 응답이 축약 필드만 줄 때가 있어, 상세 query로 보강한다.
     detailed_items: list[dict[str, Any]] = []
-    chunk_size = 300
     with httpx.Client(base_url=base_url, timeout=60) as client:
         access_token = _get_access_token(client)
-        for i in range(0, len(ids), chunk_size):
-            part = ids[i : i + chunk_size]
-            detail_response = client.post(
-                "/external/v1/pay-order/seller/product-orders/query",
-                headers={"Authorization": f"Bearer {access_token}"},
-                json={"productOrderIds": part},
-            )
-            _log_naver_403(detail_response)
-            _print_naver_trace_from_json(detail_response)
-            detail_response.raise_for_status()
-            detailed_items.extend(_extract_items(detail_response.json()))
+        detailed_items = _query_product_orders_by_ids(client, access_token, ids)
 
     if detailed_items:
         normalized = [_to_internal_order(item) for item in detailed_items]
