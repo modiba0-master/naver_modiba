@@ -7,7 +7,12 @@ import re
 import pandas as pd
 import streamlit as st
 
-from streamlit_app.column_map import COLUMN_DISPLAY_ORDER, COLUMN_MAP
+try:
+    # Monorepo execution (workspace root on PYTHONPATH)
+    from streamlit_app.column_map import COLUMN_DISPLAY_ORDER, COLUMN_MAP
+except ModuleNotFoundError:
+    # Railway root deployment (`/app` == `streamlit_app` directory)
+    from column_map import COLUMN_DISPLAY_ORDER, COLUMN_MAP
 
 _FULL_WIDTH_CSS_KEY = "_modiba_dataframe_full_width_css"
 
