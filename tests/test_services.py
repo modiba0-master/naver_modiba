@@ -69,7 +69,7 @@ def test_sync_orders_inserts_data(db_session, monkeypatch):
     assert row.business_date == date(2026, 1, 1)
 
 
-def test_sync_orders_merges_place_and_ship_times(db_session, monkeypatch):
+def test_sync_orders_keeps_existing_line_for_non_claim_updates(db_session, monkeypatch):
     base = {
         "orderId": "MOCK-002",
         "productName": "닭가슴살",
@@ -106,6 +106,46 @@ def test_sync_orders_merges_place_and_ship_times(db_session, monkeypatch):
 
     row = db_session.scalar(select(Order).where(Order.order_id == "MOCK-002"))
     assert row is not None
-    assert row.placed_order_at is not None
-    assert row.shipped_at is not None
-    assert row.order_status == "배송중"
+    # 정책: 기존 상품주문번호는 고정 유지(교환/반품/취소가 아니면 갱신하지 않음)
+    assert row.placed_order_at is None
+    assert row.shipped_at is None
+    assert row.order_status == "신규주문"
+
+
+def test_sync_orders_merge_claim_only_updates_refund_cancel(db_session, monkeypatch):
+    base = {
+        "orderId": "MOCK-003",
+        "productName": "상품A",
+        "optionName": "옵션",
+        "quantity": 1,
+        "paymentAmount": 10000,
+        "orderStatus": "신규주문",
+        "ordererName": "테스터",
+        "ordererId": "buyer-003",
+        "receiverName": "테스터",
+        "shippingAddress": "서울",
+        "paymentDate": datetime(2026, 3, 1, 12, 0, 0).isoformat(),
+    }
+    monkeypatch.setattr("app.services.sync.fetch_naver_orders", lambda: [base])
+    assert sync_orders(db_session) == 1
+
+    monkeypatch.setattr(
+        "app.services.sync.fetch_naver_orders",
+        lambda: [
+            {
+                **base,
+                "paymentAmount": 12000,
+                "refundAmount": 2000,
+                "cancelAmount": 0,
+                "orderStatus": "배송중",
+            }
+        ],
+    )
+    assert sync_orders(db_session) == 0
+
+    row = db_session.scalar(select(Order).where(Order.order_id == "MOCK-003"))
+    assert row is not None
+    # 정책: 기존 원본 금액은 고정 유지, 클레임(환불/취소) 금액만 반영
+    assert row.amount == 10000
+    assert row.refund_amount == 2000
+    assert row.net_revenue == 8000

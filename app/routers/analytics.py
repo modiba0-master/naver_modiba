@@ -15,6 +15,7 @@ from app.schemas import (
     RevenueResponse,
 )
 from app.services.analytics_service import (
+    get_claim_orders_raw,
     get_db_order_stats,
     get_orders_by_date,
     get_orders_raw,
@@ -30,9 +31,13 @@ RevenueBasis = Literal["payment", "order", "shipping"]
 
 @router.get("/db-stats", response_model=DbStatsResponse)
 def db_stats(db: Session = Depends(get_db)):
-    """DB `orders` 건수와 최신 `payment_date`(실시간 반영 확인용)."""
-    cnt, last_pd = get_db_order_stats(db)
-    return DbStatsResponse(orders_count=cnt, latest_payment_date=last_pd)
+    """DB `orders` 건수·최신 결제일시·최신 영업일(집계) — 동기화 여부 vs 날짜 필터 혼동 구분에 사용."""
+    s = get_db_order_stats(db)
+    return DbStatsResponse(
+        orders_count=int(s["orders_count"]),
+        latest_payment_date=s["latest_payment_date"],
+        latest_business_date=s["latest_business_date"],
+    )
 
 
 @router.get("/orders-by-date", response_model=OrdersByDateResponse)
@@ -59,6 +64,21 @@ def orders_raw(
     items = get_orders_raw(
         db, start_date=start_date, end_date=end_date, revenue_basis=revenue_basis
     )
+    items = [item.model_dump(mode="json") for item in items]
+    return JSONResponse(
+        content={"items": items},
+        media_type="application/json; charset=utf-8",
+    )
+
+
+@router.get("/orders-claims", response_model=OrdersRawResponse)
+def orders_claims(
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    db: Session = Depends(get_db),
+):
+    """교환/반품/취소 전용 목록."""
+    items = get_claim_orders_raw(db, start_date=start_date, end_date=end_date)
     items = [item.model_dump(mode="json") for item in items]
     return JSONResponse(
         content={"items": items},

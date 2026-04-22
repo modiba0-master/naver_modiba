@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
+from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine, ensure_orders_schema
@@ -11,6 +12,7 @@ from app.routers.analytics import router as analytics_router
 from app.routers.health import router as health_router
 from app.services.daily_summary_service import generate_daily_summary
 from app.services.sync import sync_orders
+from app.sync_state import record_scheduled_job_error, record_scheduled_job_ok
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
@@ -31,14 +33,23 @@ def _scheduled_sync_orders_and_summary() -> None:
         finally:
             db.close()
 
-        summary_result = generate_daily_summary()
+        summary_result: dict = {}
+        try:
+            summary_result = generate_daily_summary()
+        except Exception:
+            logger.exception("generate_daily_summary failed after sync_orders")
         logger.info(
             "Scheduled sync done inserted_count=%s summary_upserted=%s summary_batches=%s",
             inserted_count,
             summary_result.get("upserted_rows"),
             summary_result.get("batches"),
         )
-    except Exception:
+        record_scheduled_job_ok(
+            inserted_count=inserted_count,
+            summary_upserted=int(summary_result.get("upserted_rows") or 0),
+        )
+    except Exception as exc:
+        record_scheduled_job_error(str(exc))
         logger.exception("Scheduled sync/summary failed with exception")
     finally:
         _sync_job_lock.release()
@@ -47,8 +58,21 @@ def _scheduled_sync_orders_and_summary() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Data preservation: never drop runtime tables on startup.
-    Base.metadata.create_all(bind=engine)
-    ensure_orders_schema(engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+        ensure_orders_schema(engine)
+    except OperationalError as exc:
+        # pymysql: (1045, "Access denied for user 'x'@'host' (using password: YES/NO)")
+        errno = getattr(exc.orig, "args", (None,))[0] if exc.orig is not None else None
+        if errno == 1045:
+            logger.critical(
+                "DB login failed (MySQL 1045 Access denied). "
+                "DATABASE_URL user/password does not match the MariaDB service. "
+                "On Railway: open the MariaDB plugin → use its Variables / Connect string for "
+                "DATABASE_URL (or set DATABASE_PUBLIC_URL and DATABASE_URL_USE_PUBLIC=1 with the public URL from the same DB). "
+                "If the database was reset or the user was recreated, copy a fresh connection string; old env values stay invalid."
+            )
+        raise
 
     scheduler = None
     if settings.enable_worker and settings.run_sync_scheduler_in_api:
@@ -94,7 +118,11 @@ app = FastAPI(
 
 @app.get("/")
 def root():
-    return {"message": "naver modiba server running"}
+    return {
+        "message": "naver modiba server running",
+        "service": "FastAPI (uvicorn). Order sync + /analytics + /health.",
+        "railway": "The 'web' process in Procfile is this API; it is not the Streamlit dashboard.",
+    }
 
 
 app.include_router(health_router)

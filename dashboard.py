@@ -25,7 +25,10 @@ from streamlit_app.services.kpi_from_filtered import (
 )
 from streamlit_app.services.kpi_ui import add_avg_ticket_to_daily, append_daily_total_row
 
-DEFAULT_API_BASE_URL = "https://web-production-0001b.up.railway.app"
+_PRODUCTION_API = "https://navermodiba-production.up.railway.app"
+DEFAULT_API_BASE_URL = (os.environ.get("ANALYTICS_API_BASE_URL") or _PRODUCTION_API).strip().rstrip(
+    "/"
+)
 REQUIRED_COLUMNS = [
     "order_id",
     "date",
@@ -246,6 +249,9 @@ def main_content() -> None:
 
     with st.sidebar:
         st.header("API")
+        st.caption(
+            "이 URL의 FastAPI가 `sync_orders`로 쓰는 DB와, 대시보드 `DATABASE_URL`이 **같은** MariaDB여야 최신·일치한 데이터가 보입니다."
+        )
         api_base_url = st.text_input("API URL", value=DEFAULT_API_BASE_URL).rstrip("/")
         revenue_basis = st.selectbox(
             "집계 기준",
@@ -261,13 +267,23 @@ def main_content() -> None:
         with st.expander("결제일시가 여러 행에서 같을 때", expanded=False):
             st.markdown(
                 "네이버는 **한 번 결제(장바구니)**에 여러 상품주문 줄이 붙으면, "
-                "각 줄에 **같은 결제일시**를 줍니다. 대시보드가 만든 복제가 아니라 API·DB 원본입니다."
+                "각 줄에 **같은 결제일시**를 줍니다. 대시보드가 만든 복제가 아니라 API·DB 원본입니다.\n\n"
+                "**일자별 매출·KPI**는 `date` 컬럼(저장된 영업일, 16시 넘으면 익일)을 쓰고, "
+                "`payment_date`는 결제 시각(시·분)입니다."
             )
         try:
             ds = fetch_db_stats(api_base_url)
             lp = ds.get("latest_payment_date")
+            lb = ds.get("latest_business_date")
             st.caption(
-                f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · 최신 결제일시 {lp or '—'}"
+                f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · "
+                f"최신 결제일시 {lp or '—'} · "
+                f"최신 영업일(집계 `date`){lb or '—'}"
+            )
+            st.caption(
+                "KPI·일자필터는 **영업일**(`date`)입니다. 22일 16:00 이후 결제는 `date`가 23일로 잡힐 수 있습니다. "
+                "‘22일’만 골랐는데 없으면 **23일**·**결제일시** 컬럼을 보세요. "
+                "위 `최신 결제일시`가 며칠 전이면 **동기화/API URL** 문제입니다."
             )
         except Exception:
             st.caption("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")

@@ -1,17 +1,21 @@
 import logging
+import math
 from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import Order
 from app.services.naver import fetch_naver_orders
 from app.services.naver_orders_sync import calculate_business_date, to_kst_naive
 from app.services.revenue_compute import compute_net_revenue
 
 logger = logging.getLogger(__name__)
+_LOOKBACK_BUFFER_HOURS = 6
+_LOOKBACK_MAX_HOURS = 24 * 30
 
 VALID_ORDER_STATUSES = {
     "신규주문",
@@ -20,6 +24,16 @@ VALID_ORDER_STATUSES = {
     "배송완료",
     "구매확정",
 }
+CLAIM_STATUS_KEYWORDS = (
+    "취소",
+    "반품",
+    "교환",
+    "CANCEL",
+    "RETURN",
+    "EXCHANGE",
+    "CANCELED",
+    "CANCELLED",
+)
 
 
 def normalize_order_status(value: str) -> str:
@@ -28,6 +42,13 @@ def normalize_order_status(value: str) -> str:
 
 def is_valid_order_status(value: str) -> bool:
     return normalize_order_status(value) in VALID_ORDER_STATUSES
+
+
+def is_claim_event_status(value: str) -> bool:
+    s = normalize_order_status(value).upper()
+    if not s:
+        return False
+    return any(k in s for k in CLAIM_STATUS_KEYWORDS)
 
 
 def parse_payment_datetime_string(value: str) -> datetime | None:
@@ -106,14 +127,72 @@ def _parse_api_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _compute_dynamic_lookback_hours(db: Session, base_hours: int) -> int:
+    """
+    마지막 저장 결제시각을 기준으로 lookback을 자동 확장한다.
+    - 기본: `base_hours` (환경값)
+    - DB 최신 결제시각이 더 오래됐으면: 현재시각과의 간격 + 버퍼(6h)
+    """
+    base = max(1, int(base_hours))
+    latest = db.scalar(select(func.max(Order.payment_date)))
+    if latest is None:
+        return base
+    now = datetime.now()
+    gap_hours = max(0.0, (now - latest).total_seconds() / 3600.0)
+    dynamic = int(math.ceil(gap_hours)) + _LOOKBACK_BUFFER_HOURS
+    return max(base, min(dynamic, _LOOKBACK_MAX_HOURS))
+
+
+def _fetch_orders_with_lookback(lookback_hours: int) -> list[dict]:
+    """테스트 monkeypatch 호환: kwargs 미지원 목 함수면 기본 호출로 폴백."""
+    try:
+        return fetch_naver_orders(lookback_hours=lookback_hours)
+    except TypeError:
+        return fetch_naver_orders()
+
+
+def _coerce_quantity(payload: dict[str, Any]) -> int:
+    """API별 필드 차이를 흡수해 수량을 정수로 추출한다."""
+    for key in ("quantity", "productOrderQuantity", "orderQuantity", "productCount"):
+        if key in payload and payload.get(key) not in (None, ""):
+            try:
+                return int(payload.get(key))
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
 def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
-    """동일 상품주문번호 재동기화 시 결제·발주·발송·주문일시·상태를 보강한다."""
+    """동일 상품주문번호 재동기화 시 결제·발주·발송·주문일시·상태·라인(금액·수량·상품)을 보강한다."""
     if "orderDateRaw" in payload:
         order.order_datetime_raw = str(payload.get("orderDateRaw") or "")
     if "paymentDateRaw" in payload:
         order.payment_datetime_raw = str(payload.get("paymentDateRaw") or "")
     if "placeOrderDateRaw" in payload:
         order.place_order_datetime_raw = str(payload.get("placeOrderDateRaw") or "")
+
+    if "productName" in payload and payload.get("productName") is not None:
+        order.product_name = str(payload.get("productName") or "")
+    if "optionName" in payload and payload.get("optionName") is not None:
+        order.option_name = str(payload.get("optionName") or "")
+    if "quantity" in payload and payload.get("quantity") is not None:
+        try:
+            order.quantity = max(0, int(payload.get("quantity") or 0))
+        except (TypeError, ValueError):
+            pass
+    if "paymentAmount" in payload and payload.get("paymentAmount") is not None:
+        try:
+            order.amount = int(payload.get("paymentAmount") or 0)
+        except (TypeError, ValueError):
+            pass
+    if "ordererName" in payload and (payload.get("ordererName") or "").strip():
+        order.buyer_name = str(payload.get("ordererName") or "").strip()
+    if "ordererId" in payload and payload.get("ordererId") is not None:
+        order.buyer_id = str(payload.get("ordererId") or "").strip()
+    if "receiverName" in payload and (payload.get("receiverName") or "").strip():
+        order.receiver_name = str(payload.get("receiverName") or "").strip()
+    if "shippingAddress" in payload and payload.get("shippingAddress") is not None:
+        order.address = str(payload.get("shippingAddress") or "")
 
     ra = int(payload.get("refundAmount") or 0)
     ca = int(payload.get("cancelAmount") or 0)
@@ -163,25 +242,49 @@ def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
         order.content_order_no = co
 
 
+def _merge_claim_only(order: Order, payload: dict[str, Any]) -> None:
+    """기존 상품주문번호는 원본 고정, 교환/반품/취소 이벤트일 때만 최소 필드 갱신."""
+    st = normalize_order_status(payload.get("orderStatus", ""))
+    if st:
+        order.order_status = st
+
+    order.refund_amount = int(payload.get("refundAmount") or 0)
+    order.cancel_amount = int(payload.get("cancelAmount") or 0)
+    order.net_revenue = compute_net_revenue(order.amount, order.refund_amount, order.cancel_amount)
+
+
 def sync_orders(db: Session) -> int:
     """네이버에서 상품주문 단위 목록을 가져와 DB에 반영한다.
 
     - `order_id`는 네이버 **상품주문번호**(productOrderId). DB에 없으면 신규 Insert, 있으면 타임라인만 merge.
     - 반환값은 이번 호출에서 **새로 Insert된 행 수**(기존 행 갱신은 포함하지 않음).
     """
-    payloads = fetch_naver_orders()
+    dynamic_lookback = _compute_dynamic_lookback_hours(
+        db,
+        settings.naver_commerce_order_lookback_hours,
+    )
+    payloads = _fetch_orders_with_lookback(dynamic_lookback)
     inserted_count = 0
-    merged_existing = 0
+    skipped_existing_static = 0
+    merged_claim_existing = 0
     invalid_status = Counter()
     skipped_bad_qty = 0
+    fixed_zero_qty = 0
     skipped_missing_payment = 0
 
     for payload in payloads:
         order_id = payload["orderId"]
         existing = db.scalar(select(Order).where(Order.order_id == order_id))
         if existing is not None:
-            _merge_timeline_from_payload(existing, payload)
-            merged_existing += 1
+            st = normalize_order_status(payload.get("orderStatus", ""))
+            has_claim_amount = int(payload.get("refundAmount") or 0) > 0 or int(
+                payload.get("cancelAmount") or 0
+            ) > 0
+            if is_claim_event_status(st) or has_claim_amount:
+                _merge_claim_only(existing, payload)
+                merged_claim_existing += 1
+            else:
+                skipped_existing_static += 1
             continue
 
         order_status = normalize_order_status(payload.get("orderStatus", ""))
@@ -189,12 +292,17 @@ def sync_orders(db: Session) -> int:
             invalid_status[order_status or "(empty)"] += 1
             continue
 
-        quantity = int(payload["quantity"])
+        quantity = _coerce_quantity(payload)
         amount = int(payload["paymentAmount"])
-        if quantity <= 0 or amount < 0:
+        if amount < 0:
             # Guardrail: skip suspicious payloads to avoid polluted analytics rows.
             skipped_bad_qty += 1
             continue
+        if quantity <= 0:
+            # Naver 응답 변형/누락으로 quantity가 0으로 들어오면 신규 주문이 통째로 누락될 수 있다.
+            # 집계 연속성을 위해 최소 1로 보정하고, 로그 카운트로 관찰한다.
+            quantity = 1
+            fixed_zero_qty += 1
 
         raw_pd = payload.get("paymentDate")
         if raw_pd is None or not str(raw_pd).strip():
@@ -261,13 +369,16 @@ def sync_orders(db: Session) -> int:
 
     db.commit()
     logger.info(
-        "sync_orders: fetched=%s inserted=%s merged_existing=%s skipped_invalid_status=%s "
-        "skipped_bad_qty=%s skipped_missing_payment=%s",
+        "sync_orders: lookback_hours=%s fetched=%s inserted=%s merged_claim_existing=%s skipped_existing_static=%s "
+        "skipped_invalid_status=%s skipped_bad_qty=%s fixed_zero_qty=%s skipped_missing_payment=%s",
+        dynamic_lookback,
         len(payloads),
         inserted_count,
-        merged_existing,
+        merged_claim_existing,
+        skipped_existing_static,
         sum(invalid_status.values()),
         skipped_bad_qty,
+        fixed_zero_qty,
         skipped_missing_payment,
     )
     if invalid_status:

@@ -28,6 +28,7 @@ def test_analytics_endpoints(client, db_session, monkeypatch):
     sj = stats.json()
     assert sj["orders_count"] >= 1
     assert sj.get("latest_payment_date")
+    assert "latest_business_date" in sj
 
     by_date_response = client.get("/analytics/orders-by-date")
     assert by_date_response.status_code == 200

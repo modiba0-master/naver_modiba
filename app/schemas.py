@@ -113,7 +113,9 @@ class HeatmapResponse(BaseModel):
 
 
 class DbStatsResponse(BaseModel):
-    """대시보드에서 DB 반영 여부 확인용(원장 건수·최신 결제 시각)."""
+    """대시보드에서 DB 반영 여부 확인용(원장 건수·최신 결제 시각·최신 영업일)."""
 
     orders_count: int
     latest_payment_date: datetime | None = None
+    # max(business_date) — 대시보드 `date`/KPI와 동일한 16시 영업일
+    latest_business_date: date | None = None

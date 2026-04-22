@@ -14,16 +14,22 @@ from app.schemas import (
     OrdersByDateItem,
 )
 from app.services.revenue_compute import derive_revenue_status
-from app.services.sync import is_valid_order_status, normalize_order_status
+from app.services.sync import is_claim_event_status, is_valid_order_status, normalize_order_status
 
 RevenueBasis = Literal["payment", "order", "shipping"]
 
 
-def get_db_order_stats(db: Session) -> tuple[int, datetime | None]:
-    """원장 건수와 최신 결제일시(대시보드에서 DB 반영 여부 확인용)."""
-    cnt = db.scalar(select(func.count()).select_from(Order))
+def get_db_order_stats(db: Session) -> dict[str, Any]:
+    """원장 건수·최신 결제일시·최신 영업일(집계) — `date`/KPI vs 실제 결제 캘린더 구분에 사용."""
+    cnt = int(db.scalar(select(func.count()).select_from(Order)) or 0)
     last_pd = db.scalar(select(func.max(Order.payment_date)))
-    return int(cnt or 0), last_pd
+    # KPI·일자별 매출이 쓰는 `business_date`(16시 규칙) 최댓값
+    last_bd = db.scalar(select(func.max(Order.business_date)))
+    return {
+        "orders_count": cnt,
+        "latest_payment_date": last_pd,
+        "latest_business_date": last_bd,
+    }
 
 
 def _effective_business_date(row: Order, basis: RevenueBasis) -> date | None:
@@ -170,6 +176,64 @@ def get_orders_raw(
 
     items = filtered_items
     return [OrderRawItem.model_validate(x) for x in items]
+
+
+def get_claim_orders_raw(
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> list[OrderRawItem]:
+    """교환/반품/취소 전용 조회. 기본 매출 목록과 분리해서 본다."""
+    stmt = select(Order).order_by(Order.payment_date.desc())
+    col = _orders_raw_sql_date_column("payment")
+    if start_date is not None and end_date is not None:
+        stmt = stmt.where(col.between(start_date.date(), end_date.date()))
+    elif start_date is not None:
+        stmt = stmt.where(col >= start_date.date())
+    elif end_date is not None:
+        stmt = stmt.where(col <= end_date.date())
+
+    rows = db.scalars(stmt).all()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        st = normalize_order_status(row.order_status)
+        if not (is_claim_event_status(st) or row.refund_amount > 0 or row.cancel_amount > 0):
+            continue
+        pay_bd = row.payment_business_date or row.business_date
+        item: dict[str, Any] = {
+            "order_id": row.order_id,
+            "content_order_no": row.content_order_no,
+            "date": row.payment_business_date or row.business_date,
+            "revenue_basis": "payment",
+            "business_date": pay_bd,
+            "order_business_date": row.order_business_date,
+            "payment_business_date": row.payment_business_date,
+            "shipping_business_date": row.shipping_business_date,
+            "aggregation_window_kst": format_kst_sales_window(pay_bd),
+            "order_calendar_date": row.order_date,
+            "payment_date": row.payment_date,
+            "ordered_at": row.ordered_at,
+            "placed_order_at": row.placed_order_at,
+            "shipped_at": row.shipped_at,
+            "order_datetime_raw": getattr(row, "order_datetime_raw", "") or "",
+            "payment_datetime_raw": getattr(row, "payment_datetime_raw", "") or "",
+            "place_order_datetime_raw": getattr(row, "place_order_datetime_raw", "") or "",
+            "buyer_name": row.buyer_name,
+            "buyer_id": row.buyer_id,
+            "receiver_name": row.receiver_name,
+            "address": row.address,
+            "product_name": row.product_name,
+            "option_name": row.option_name,
+            "quantity": row.quantity,
+            "amount": row.amount,
+            "refund_amount": row.refund_amount,
+            "cancel_amount": row.cancel_amount,
+            "net_revenue": row.net_revenue,
+            "revenue_status": derive_revenue_status(row.net_revenue, row.amount),
+            "order_status": st,
+        }
+        out.append(item)
+    return [OrderRawItem.model_validate(x) for x in out]
 
 
 def get_total_revenue(

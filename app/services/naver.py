@@ -196,12 +196,13 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
             )
             or ""
         ),
-        # 결제는 주문(장바구니) 단위 1회 → 같은 주문번호의 상품주문(줄)마다 API가 동일한 paymentDate를 반복(가공 아님).
-        # lastChangedDate는 결제 시각과 다를 수 있어 결제일시 대용으로 쓰지 않음.
+        # 결제는 주문(장바구니) 단위 1회 → 같은 contentOrderNo의 상품주문(줄)마다 API가 동일 paymentDate를 반복(가공 아님).
+        # list/query 응답에 따라 `order` 또는 `productOrder` 쪽에만 있을 수 있음.
         "paymentDate": _to_iso_datetime(
             _get_value(
                 item,
                 "order.paymentDate",
+                "productOrder.paymentDate",
                 "paymentDate",
                 "paymentDateTime",
             )
@@ -231,6 +232,7 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
             _get_value(
                 item,
                 "order.paymentDate",
+                "productOrder.paymentDate",
                 "paymentDate",
                 "paymentDateTime",
             )
@@ -512,10 +514,10 @@ def _fetch_raw_orders_payment_window(
     return out
 
 
-def _fetch_naver_orders_via_last_changed() -> list[dict]:
+def _fetch_naver_orders_via_last_changed(*, lookback_hours: int | None = None) -> list[dict]:
     """변경일시(last-changed) → 상품주문번호 수집 → query 상세."""
     base_url = settings.naver_commerce_api_base_url.rstrip("/")
-    lookback_hours = max(settings.naver_commerce_order_lookback_hours, 1)
+    lookback_hours = max(int(lookback_hours or settings.naver_commerce_order_lookback_hours), 1)
     now_kst = datetime.now(KST)
     total_from = now_kst - timedelta(hours=lookback_hours)
     windows = _build_lookback_windows(now_kst, total_from)
@@ -546,7 +548,9 @@ def _fetch_naver_orders_via_last_changed() -> list[dict]:
         return [item for item in normalized if item["orderId"]]
 
 
-def _fetch_naver_orders_via_payment_datetime() -> list[dict]:
+def _fetch_naver_orders_via_payment_datetime(
+    *, lookback_hours: int | None = None
+) -> list[dict]:
     """결제일시(PAYED_DATETIME) 구간으로 상세를 직접 받는다. last_changed 누락(결제·변경 시각 불일치) 완화.
 
     - API당 최대 24h 구간 → lookback을 24h 윈도로 쪼갬.
@@ -556,7 +560,7 @@ def _fetch_naver_orders_via_payment_datetime() -> list[dict]:
 
     _log = _logging.getLogger(__name__)
     base_url = settings.naver_commerce_api_base_url.rstrip("/")
-    lookback_hours = max(settings.naver_commerce_order_lookback_hours, 1)
+    lookback_hours = max(int(lookback_hours or settings.naver_commerce_order_lookback_hours), 1)
     now_kst = datetime.now(KST)
     total_from = now_kst - timedelta(hours=lookback_hours)
     windows = _build_lookback_windows(now_kst, total_from)
@@ -600,7 +604,7 @@ def _fetch_naver_orders_via_payment_datetime() -> list[dict]:
     return [item for item in normalized if item["orderId"]]
 
 
-def fetch_naver_orders() -> list[dict]:
+def fetch_naver_orders(*, lookback_hours: int | None = None) -> list[dict]:
     """네이버 커머스에서 상품주문 단위 목록을 가져온다.
 
     기본(`NAVER_ORDER_SYNC_MODE=payment_datetime`): **결제일시** 구간 조회 API로
@@ -613,12 +617,12 @@ def fetch_naver_orders() -> list[dict]:
     _log = _logging.getLogger(__name__)
     mode = (settings.naver_order_sync_mode or "payment_datetime").strip().lower()
     if mode == "last_changed":
-        return _fetch_naver_orders_via_last_changed()
+        return _fetch_naver_orders_via_last_changed(lookback_hours=lookback_hours)
     try:
-        return _fetch_naver_orders_via_payment_datetime()
+        return _fetch_naver_orders_via_payment_datetime(lookback_hours=lookback_hours)
     except PaymentRangeQueryError as exc:
         _log.warning(
             "결제일시 구간 조회 미사용/오류 → last_changed 로 폴백합니다: %s",
             exc,
         )
-        return _fetch_naver_orders_via_last_changed()
+        return _fetch_naver_orders_via_last_changed(lookback_hours=lookback_hours)
