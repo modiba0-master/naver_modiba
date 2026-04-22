@@ -11,12 +11,14 @@ from app.schemas import (
     HeatmapResponse,
     HourRevenueResponse,
     OrdersByDateResponse,
+    OrdersLedgerResponse,
     OrdersRawResponse,
     RevenueResponse,
 )
 from app.services.analytics_service import (
     get_claim_orders_raw,
     get_db_order_stats,
+    get_orders_ledger,
     get_orders_by_date,
     get_orders_raw,
     get_revenue_by_hour,
@@ -79,6 +81,21 @@ def orders_claims(
 ):
     """교환/반품/취소 전용 목록."""
     items = get_claim_orders_raw(db, start_date=start_date, end_date=end_date)
+    items = [item.model_dump(mode="json") for item in items]
+    return JSONResponse(
+        content={"items": items},
+        media_type="application/json; charset=utf-8",
+    )
+
+
+@router.get("/orders-ledger", response_model=OrdersLedgerResponse)
+def orders_ledger(
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    db: Session = Depends(get_db),
+):
+    """주문 원장 상세(확장 저장 컬럼). 대시보드 표시를 바꾸지 않고 운영 확인에 사용."""
+    items = get_orders_ledger(db, start_date=start_date, end_date=end_date)
     items = [item.model_dump(mode="json") for item in items]
     return JSONResponse(
         content={"items": items},

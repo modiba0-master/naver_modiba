@@ -51,6 +51,13 @@ def _raw_api_datetime(value: Any) -> str:
     return str(value).strip()
 
 
+def _to_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _normalize_status(value: Any) -> str:
     status = str(value or "").strip()
     return _STATUS_MAP.get(status, status or "신규주문")
@@ -250,6 +257,74 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
             "delivery.sendDate",
             "productOrder.sendDate",
             "sendDate",
+        ),
+        # Additional order-export fields (store-as-is)
+        "orderDetailStatus": str(
+            _get_value(item, "productOrder.claimStatus", "claimStatus", "productOrder.productOrderStatus") or ""
+        ),
+        "payLocationType": str(_get_value(item, "order.payLocationType", "payLocationType") or ""),
+        "productNo": str(_get_value(item, "productOrder.productNo", "productNo") or ""),
+        "productType": str(_get_value(item, "productOrder.productClass", "productType") or ""),
+        "optionCode": str(_get_value(item, "productOrder.optionCode", "option.optionCode", "optionCode") or ""),
+        "optionPrice": _to_int(_get_value(item, "productOrder.optionPrice", "optionPrice")),
+        "productPrice": _to_int(_get_value(item, "productOrder.unitPrice", "productPrice")),
+        "finalProductDiscountAmount": _to_int(
+            _get_value(item, "productOrder.finalDiscountAmount", "finalProductDiscountAmount") or 0
+        ),
+        "sellerDiscountAmount": _to_int(
+            _get_value(item, "productOrder.sellerBurdenDiscountAmount", "sellerDiscountAmount") or 0
+        ),
+        "finalOrderAmount": _to_int(
+            _get_value(item, "productOrder.totalPaymentAmount", "finalOrderAmount", "paymentAmount") or 0
+        ),
+        "dispatchDueDateRaw": _raw_api_datetime(
+            _get_value(item, "productOrder.dispatchDueDate", "dispatchDueDate")
+        ),
+        "deliveryFeeType": str(
+            _get_value(item, "productOrder.deliveryFeeType", "deliveryFeeType") or ""
+        ),
+        "deliveryBundleGroupNo": str(
+            _get_value(item, "productOrder.deliveryBundleGroupUsable", "deliveryBundleGroupNo") or ""
+        ),
+        "deliveryFeePayType": str(
+            _get_value(item, "productOrder.deliveryAttributeType", "deliveryFeePayType") or ""
+        ),
+        "deliveryFeeAmount": _to_int(
+            _get_value(item, "productOrder.shippingFeeAmount", "deliveryFeeAmount") or 0
+        ),
+        "jejuIslandExtraFee": _to_int(
+            _get_value(item, "productOrder.sectionDeliveryFee", "jejuIslandExtraFee") or 0
+        ),
+        "deliveryFeeDiscountAmount": _to_int(
+            _get_value(item, "productOrder.shippingDiscountAmount", "deliveryFeeDiscountAmount") or 0
+        ),
+        "receiverContact1": str(
+            _get_value(
+                item,
+                "productOrder.shippingAddress.tel1",
+                "shippingAddress.tel1",
+                "receiverContact1",
+            )
+            or ""
+        ),
+        "integratedShippingAddress": str(
+            _get_value(item, "productOrder.shippingAddress.baseAddress", "integratedShippingAddress")
+            or ""
+        ),
+        "buyerContact": str(_get_value(item, "order.ordererTel", "buyerContact") or ""),
+        "shippingMessage": str(
+            _get_value(item, "productOrder.shippingMemo", "shippingMemo", "shippingMessage") or ""
+        ),
+        "paymentMethod": str(_get_value(item, "order.paymentMeans", "paymentMethod") or ""),
+        "naverpayOrderCommission": _to_int(
+            _get_value(item, "productOrder.naverPayCommission", "naverpayOrderCommission") or 0
+        ),
+        "salesIntegrationCommission": _to_int(
+            _get_value(item, "productOrder.salesInterlockCommission", "salesIntegrationCommission") or 0
+        ),
+        "expectedSettlementAmount": _to_int(
+            _get_value(item, "productOrder.expectedSettlementAmount", "expectedSettlementAmount")
+            or 0
         ),
     }
 
@@ -598,9 +673,32 @@ def _fetch_naver_orders_via_payment_datetime(
         )
         if oid:
             seen[oid] = it
-    deduped = list(seen.values())
+    ids = list(seen.keys())
+    if not ids:
+        normalized = [_to_internal_order(item) for item in raw_items]
+        return [item for item in normalized if item["orderId"]]
 
-    normalized = [_to_internal_order(item) for item in deduped]
+    # PAYED_DATETIME list 응답이 축약 필드만 줄 때가 있어, 상세 query로 보강한다.
+    detailed_items: list[dict[str, Any]] = []
+    chunk_size = 300
+    with httpx.Client(base_url=base_url, timeout=60) as client:
+        access_token = _get_access_token(client)
+        for i in range(0, len(ids), chunk_size):
+            part = ids[i : i + chunk_size]
+            detail_response = client.post(
+                "/external/v1/pay-order/seller/product-orders/query",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json={"productOrderIds": part},
+            )
+            _log_naver_403(detail_response)
+            _print_naver_trace_from_json(detail_response)
+            detail_response.raise_for_status()
+            detailed_items.extend(_extract_items(detail_response.json()))
+
+    if detailed_items:
+        normalized = [_to_internal_order(item) for item in detailed_items]
+    else:
+        normalized = [_to_internal_order(item) for item in raw_items]
     return [item for item in normalized if item["orderId"]]
 
 

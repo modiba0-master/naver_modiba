@@ -31,7 +31,12 @@ class Settings(BaseSettings):
     naver_seller_id: str | None = Field(default=None, alias="NAVER_SELLER_ID")
     naver_commerce_api_base_url: str = "https://api.commerce.naver.com"
     naver_commerce_oauth_type: str = "SELF"
-    naver_commerce_order_lookback_hours: int = 72
+    # 평시 조회 구간(중복 방지 upsert 구조라 약간 겹쳐도 무방). 필요 시 환경변수로 조정.
+    naver_commerce_order_lookback_hours: int = 24
+    # 수동 누락복구 전용(기본 비활성). 값>0일 때 해당 시간만큼 backfill 조회.
+    naver_backfill_lookback_hours: int = Field(
+        default=0, alias="NAVER_BACKFILL_LOOKBACK_HOURS"
+    )
     # payment_datetime: 결제일시 구간 조회(누락 적음). last_changed: 변경일시 API(기존).
     naver_order_sync_mode: str = Field(
         default="payment_datetime", alias="NAVER_ORDER_SYNC_MODE"

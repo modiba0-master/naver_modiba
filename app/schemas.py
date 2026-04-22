@@ -86,6 +86,64 @@ class OrdersRawResponse(BaseModel):
     items: List[OrderRawItem]
 
 
+class OrderLedgerItem(BaseModel):
+    """네이버 주문 원장(확장 저장 컬럼 포함). 대시보드가 아닌 운영/다운로드용."""
+
+    order_id: str
+    content_order_no: str | None = None
+    payment_date: datetime
+    order_date: date
+    business_date: date
+    order_status: str
+    order_detail_status: str = ""
+    pay_location_type: str = ""
+    buyer_name: str
+    buyer_id: str
+    buyer_contact: str = ""
+    receiver_name: str
+    receiver_contact1: str = ""
+    address: str
+    integrated_shipping_address: str = ""
+    shipping_message: str = ""
+    product_no: str = ""
+    product_name: str
+    product_type: str = ""
+    option_name: str
+    option_code: str = ""
+    quantity: int
+    option_price: int = 0
+    product_price: int = 0
+    final_product_discount_amount: int = 0
+    seller_discount_amount: int = 0
+    final_order_amount: int = 0
+    amount: int
+    delivery_fee_type: str = ""
+    delivery_bundle_group_no: str = ""
+    delivery_fee_pay_type: str = ""
+    delivery_fee_amount: int = 0
+    jeju_island_extra_fee: int = 0
+    delivery_fee_discount_amount: int = 0
+    dispatch_due_date_raw: str = ""
+    shipped_date_raw: str = ""
+    payment_method: str = ""
+    naverpay_order_commission: int = 0
+    sales_integration_commission: int = 0
+    expected_settlement_amount: int = 0
+    refund_amount: int = 0
+    cancel_amount: int = 0
+    net_revenue: int = 0
+    ordered_at: datetime | None = None
+    placed_order_at: datetime | None = None
+    shipped_at: datetime | None = None
+    order_datetime_raw: str = ""
+    payment_datetime_raw: str = ""
+    place_order_datetime_raw: str = ""
+
+
+class OrdersLedgerResponse(BaseModel):
+    items: List[OrderLedgerItem]
+
+
 class RevenueResponse(BaseModel):
     total_revenue: Decimal = Field(default=0)
 

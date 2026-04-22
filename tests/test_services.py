@@ -149,3 +149,28 @@ def test_sync_orders_merge_claim_only_updates_refund_cancel(db_session, monkeypa
     assert row.amount == 10000
     assert row.refund_amount == 2000
     assert row.net_revenue == 8000
+
+
+def test_sync_orders_inserts_with_fallback_when_payment_date_missing(db_session, monkeypatch):
+    payload = [
+        {
+            "orderId": "MOCK-004",
+            "productName": "상품B",
+            "optionName": "옵션",
+            "quantity": 1,
+            "paymentAmount": 15000,
+            "orderStatus": "신규주문",
+            "ordererName": "테스터",
+            "ordererId": "buyer-004",
+            "receiverName": "테스터",
+            "shippingAddress": "서울",
+            "paymentDate": "",
+            "orderDate": datetime(2026, 4, 22, 9, 30, 0).isoformat(),
+        }
+    ]
+    monkeypatch.setattr("app.services.sync.fetch_naver_orders", lambda: payload)
+    assert sync_orders(db_session) == 1
+
+    row = db_session.scalar(select(Order).where(Order.order_id == "MOCK-004"))
+    assert row is not None
+    assert row.payment_date == datetime(2026, 4, 22, 9, 30, 0)

@@ -1,10 +1,9 @@
 import logging
-import math
 from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -14,7 +13,6 @@ from app.services.naver_orders_sync import calculate_business_date, to_kst_naive
 from app.services.revenue_compute import compute_net_revenue
 
 logger = logging.getLogger(__name__)
-_LOOKBACK_BUFFER_HOURS = 6
 _LOOKBACK_MAX_HOURS = 24 * 30
 
 VALID_ORDER_STATUSES = {
@@ -127,20 +125,15 @@ def _parse_api_datetime(value: Any) -> datetime | None:
         return None
 
 
-def _compute_dynamic_lookback_hours(db: Session, base_hours: int) -> int:
+def _resolve_lookback_hours() -> tuple[int, str]:
     """
-    마지막 저장 결제시각을 기준으로 lookback을 자동 확장한다.
-    - 기본: `base_hours` (환경값)
-    - DB 최신 결제시각이 더 오래됐으면: 현재시각과의 간격 + 버퍼(6h)
+    평시에는 고정 구간만 조회하고, 누락복구는 필요할 때만 별도 설정으로 실행한다.
     """
-    base = max(1, int(base_hours))
-    latest = db.scalar(select(func.max(Order.payment_date)))
-    if latest is None:
-        return base
-    now = datetime.now()
-    gap_hours = max(0.0, (now - latest).total_seconds() / 3600.0)
-    dynamic = int(math.ceil(gap_hours)) + _LOOKBACK_BUFFER_HOURS
-    return max(base, min(dynamic, _LOOKBACK_MAX_HOURS))
+    base = max(1, int(settings.naver_commerce_order_lookback_hours))
+    manual_backfill = max(0, int(settings.naver_backfill_lookback_hours))
+    if manual_backfill > 0:
+        return min(manual_backfill, _LOOKBACK_MAX_HOURS), "manual_backfill"
+    return min(base, _LOOKBACK_MAX_HOURS), "regular"
 
 
 def _fetch_orders_with_lookback(lookback_hours: int) -> list[dict]:
@@ -160,6 +153,77 @@ def _coerce_quantity(payload: dict[str, Any]) -> int:
             except (TypeError, ValueError):
                 continue
     return 0
+
+
+def _fallback_payment_datetime(payload: dict[str, Any]) -> datetime | None:
+    """
+    paymentDate 누락 시 누락구간 백필을 위해 대체 시각을 선택한다.
+    우선순위: orderDate -> placeOrderDate -> sendDate
+    """
+    for key in ("orderDate", "placeOrderDate", "sendDate"):
+        dt = _api_datetime_for_db(_parse_api_datetime(payload.get(key)))
+        if dt is not None:
+            return dt
+    return None
+
+
+def _pstr(payload: dict[str, Any], key: str) -> str:
+    return str(payload.get(key) or "")
+
+
+def _pint(payload: dict[str, Any], key: str) -> int:
+    try:
+        return int(payload.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fill_missing_extended_columns(order: Order, payload: dict[str, Any]) -> None:
+    """기존 주문에서 비어있는 확장 컬럼만 보강(원본 핵심 값은 유지)."""
+    str_fields = {
+        "shipped_date_raw": "sendDate",
+        "order_detail_status": "orderDetailStatus",
+        "pay_location_type": "payLocationType",
+        "product_no": "productNo",
+        "product_type": "productType",
+        "option_code": "optionCode",
+        "dispatch_due_date_raw": "dispatchDueDateRaw",
+        "delivery_fee_type": "deliveryFeeType",
+        "delivery_bundle_group_no": "deliveryBundleGroupNo",
+        "delivery_fee_pay_type": "deliveryFeePayType",
+        "receiver_contact1": "receiverContact1",
+        "integrated_shipping_address": "integratedShippingAddress",
+        "buyer_contact": "buyerContact",
+        "shipping_message": "shippingMessage",
+        "payment_method": "paymentMethod",
+    }
+    int_fields = {
+        "option_price": "optionPrice",
+        "product_price": "productPrice",
+        "final_product_discount_amount": "finalProductDiscountAmount",
+        "seller_discount_amount": "sellerDiscountAmount",
+        "final_order_amount": "finalOrderAmount",
+        "delivery_fee_amount": "deliveryFeeAmount",
+        "jeju_island_extra_fee": "jejuIslandExtraFee",
+        "delivery_fee_discount_amount": "deliveryFeeDiscountAmount",
+        "naverpay_order_commission": "naverpayOrderCommission",
+        "sales_integration_commission": "salesIntegrationCommission",
+        "expected_settlement_amount": "expectedSettlementAmount",
+    }
+    for model_field, payload_key in str_fields.items():
+        current = str(getattr(order, model_field, "") or "")
+        if current:
+            continue
+        incoming = _pstr(payload, payload_key)
+        if incoming:
+            setattr(order, model_field, incoming)
+    for model_field, payload_key in int_fields.items():
+        current = int(getattr(order, model_field, 0) or 0)
+        if current != 0:
+            continue
+        incoming = _pint(payload, payload_key)
+        if incoming != 0:
+            setattr(order, model_field, incoming)
 
 
 def _merge_timeline_from_payload(order: Order, payload: dict[str, Any]) -> None:
@@ -251,6 +315,7 @@ def _merge_claim_only(order: Order, payload: dict[str, Any]) -> None:
     order.refund_amount = int(payload.get("refundAmount") or 0)
     order.cancel_amount = int(payload.get("cancelAmount") or 0)
     order.net_revenue = compute_net_revenue(order.amount, order.refund_amount, order.cancel_amount)
+    order.order_detail_status = _pstr(payload, "orderDetailStatus")
 
 
 def sync_orders(db: Session) -> int:
@@ -259,11 +324,8 @@ def sync_orders(db: Session) -> int:
     - `order_id`는 네이버 **상품주문번호**(productOrderId). DB에 없으면 신규 Insert, 있으면 타임라인만 merge.
     - 반환값은 이번 호출에서 **새로 Insert된 행 수**(기존 행 갱신은 포함하지 않음).
     """
-    dynamic_lookback = _compute_dynamic_lookback_hours(
-        db,
-        settings.naver_commerce_order_lookback_hours,
-    )
-    payloads = _fetch_orders_with_lookback(dynamic_lookback)
+    lookback_hours, lookback_mode = _resolve_lookback_hours()
+    payloads = _fetch_orders_with_lookback(lookback_hours)
     inserted_count = 0
     skipped_existing_static = 0
     merged_claim_existing = 0
@@ -271,11 +333,13 @@ def sync_orders(db: Session) -> int:
     skipped_bad_qty = 0
     fixed_zero_qty = 0
     skipped_missing_payment = 0
+    fallback_payment_used = 0
 
     for payload in payloads:
         order_id = payload["orderId"]
         existing = db.scalar(select(Order).where(Order.order_id == order_id))
         if existing is not None:
+            _fill_missing_extended_columns(existing, payload)
             st = normalize_order_status(payload.get("orderStatus", ""))
             has_claim_amount = int(payload.get("refundAmount") or 0) > 0 or int(
                 payload.get("cancelAmount") or 0
@@ -305,14 +369,16 @@ def sync_orders(db: Session) -> int:
             fixed_zero_qty += 1
 
         raw_pd = payload.get("paymentDate")
-        if raw_pd is None or not str(raw_pd).strip():
-            skipped_missing_payment += 1
-            continue
-        try:
-            payment_stored = parse_payment_datetime_string(str(raw_pd))
-        except ValueError:
-            skipped_missing_payment += 1
-            continue
+        payment_stored: datetime | None = None
+        if raw_pd is not None and str(raw_pd).strip():
+            try:
+                payment_stored = parse_payment_datetime_string(str(raw_pd))
+            except ValueError:
+                payment_stored = None
+        if payment_stored is None:
+            payment_stored = _fallback_payment_datetime(payload)
+            if payment_stored is not None:
+                fallback_payment_used += 1
         if payment_stored is None:
             skipped_missing_payment += 1
             continue
@@ -363,15 +429,42 @@ def sync_orders(db: Session) -> int:
             order_datetime_raw=str(payload.get("orderDateRaw") or ""),
             payment_datetime_raw=str(payload.get("paymentDateRaw") or ""),
             place_order_datetime_raw=str(payload.get("placeOrderDateRaw") or ""),
+            shipped_date_raw=str(payload.get("sendDate") or ""),
+            order_detail_status=_pstr(payload, "orderDetailStatus"),
+            pay_location_type=_pstr(payload, "payLocationType"),
+            product_no=_pstr(payload, "productNo"),
+            product_type=_pstr(payload, "productType"),
+            option_code=_pstr(payload, "optionCode"),
+            option_price=_pint(payload, "optionPrice"),
+            product_price=_pint(payload, "productPrice"),
+            final_product_discount_amount=_pint(payload, "finalProductDiscountAmount"),
+            seller_discount_amount=_pint(payload, "sellerDiscountAmount"),
+            final_order_amount=_pint(payload, "finalOrderAmount"),
+            dispatch_due_date_raw=_pstr(payload, "dispatchDueDateRaw"),
+            delivery_fee_type=_pstr(payload, "deliveryFeeType"),
+            delivery_bundle_group_no=_pstr(payload, "deliveryBundleGroupNo"),
+            delivery_fee_pay_type=_pstr(payload, "deliveryFeePayType"),
+            delivery_fee_amount=_pint(payload, "deliveryFeeAmount"),
+            jeju_island_extra_fee=_pint(payload, "jejuIslandExtraFee"),
+            delivery_fee_discount_amount=_pint(payload, "deliveryFeeDiscountAmount"),
+            receiver_contact1=_pstr(payload, "receiverContact1"),
+            integrated_shipping_address=_pstr(payload, "integratedShippingAddress"),
+            buyer_contact=_pstr(payload, "buyerContact"),
+            shipping_message=_pstr(payload, "shippingMessage"),
+            payment_method=_pstr(payload, "paymentMethod"),
+            naverpay_order_commission=_pint(payload, "naverpayOrderCommission"),
+            sales_integration_commission=_pint(payload, "salesIntegrationCommission"),
+            expected_settlement_amount=_pint(payload, "expectedSettlementAmount"),
         )
         db.add(order)
         inserted_count += 1
 
     db.commit()
     logger.info(
-        "sync_orders: lookback_hours=%s fetched=%s inserted=%s merged_claim_existing=%s skipped_existing_static=%s "
-        "skipped_invalid_status=%s skipped_bad_qty=%s fixed_zero_qty=%s skipped_missing_payment=%s",
-        dynamic_lookback,
+        "sync_orders: lookback_mode=%s lookback_hours=%s fetched=%s inserted=%s merged_claim_existing=%s skipped_existing_static=%s "
+        "skipped_invalid_status=%s skipped_bad_qty=%s fixed_zero_qty=%s fallback_payment_used=%s skipped_missing_payment=%s",
+        lookback_mode,
+        lookback_hours,
         len(payloads),
         inserted_count,
         merged_claim_existing,
@@ -379,6 +472,7 @@ def sync_orders(db: Session) -> int:
         sum(invalid_status.values()),
         skipped_bad_qty,
         fixed_zero_qty,
+        fallback_payment_used,
         skipped_missing_payment,
     )
     if invalid_status:

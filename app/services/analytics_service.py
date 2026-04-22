@@ -10,6 +10,7 @@ from app.models import Order
 from app.schemas import (
     HeatmapCell,
     HourRevenueRow,
+    OrderLedgerItem,
     OrderRawItem,
     OrdersByDateItem,
 )
@@ -234,6 +235,76 @@ def get_claim_orders_raw(
         }
         out.append(item)
     return [OrderRawItem.model_validate(x) for x in out]
+
+
+def get_orders_ledger(
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> list[OrderLedgerItem]:
+    """운영 확인/다운로드용 주문 원장 상세. 저장된 확장 컬럼을 그대로 노출."""
+    stmt = select(Order).order_by(Order.payment_date.desc(), Order.id.desc())
+    if start_date is not None:
+        stmt = stmt.where(Order.payment_date >= start_date)
+    if end_date is not None:
+        stmt = stmt.where(Order.payment_date <= end_date)
+    rows = db.scalars(stmt).all()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        items.append(
+            {
+                "order_id": row.order_id,
+                "content_order_no": row.content_order_no,
+                "payment_date": row.payment_date,
+                "order_date": row.order_date,
+                "business_date": row.business_date,
+                "order_status": row.order_status,
+                "order_detail_status": row.order_detail_status,
+                "pay_location_type": row.pay_location_type,
+                "buyer_name": row.buyer_name,
+                "buyer_id": row.buyer_id,
+                "buyer_contact": row.buyer_contact,
+                "receiver_name": row.receiver_name,
+                "receiver_contact1": row.receiver_contact1,
+                "address": row.address,
+                "integrated_shipping_address": row.integrated_shipping_address,
+                "shipping_message": row.shipping_message,
+                "product_no": row.product_no,
+                "product_name": row.product_name,
+                "product_type": row.product_type,
+                "option_name": row.option_name,
+                "option_code": row.option_code,
+                "quantity": row.quantity,
+                "option_price": row.option_price,
+                "product_price": row.product_price,
+                "final_product_discount_amount": row.final_product_discount_amount,
+                "seller_discount_amount": row.seller_discount_amount,
+                "final_order_amount": row.final_order_amount,
+                "amount": row.amount,
+                "delivery_fee_type": row.delivery_fee_type,
+                "delivery_bundle_group_no": row.delivery_bundle_group_no,
+                "delivery_fee_pay_type": row.delivery_fee_pay_type,
+                "delivery_fee_amount": row.delivery_fee_amount,
+                "jeju_island_extra_fee": row.jeju_island_extra_fee,
+                "delivery_fee_discount_amount": row.delivery_fee_discount_amount,
+                "dispatch_due_date_raw": row.dispatch_due_date_raw,
+                "shipped_date_raw": row.shipped_date_raw,
+                "payment_method": row.payment_method,
+                "naverpay_order_commission": row.naverpay_order_commission,
+                "sales_integration_commission": row.sales_integration_commission,
+                "expected_settlement_amount": row.expected_settlement_amount,
+                "refund_amount": row.refund_amount,
+                "cancel_amount": row.cancel_amount,
+                "net_revenue": row.net_revenue,
+                "ordered_at": row.ordered_at,
+                "placed_order_at": row.placed_order_at,
+                "shipped_at": row.shipped_at,
+                "order_datetime_raw": row.order_datetime_raw,
+                "payment_datetime_raw": row.payment_datetime_raw,
+                "place_order_datetime_raw": row.place_order_datetime_raw,
+            }
+        )
+    return [OrderLedgerItem.model_validate(x) for x in items]
 
 
 def get_total_revenue(

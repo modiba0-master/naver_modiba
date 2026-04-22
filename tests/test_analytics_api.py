@@ -60,3 +60,14 @@ def test_analytics_endpoints(client, db_session, monkeypatch):
 
     raw_payment = client.get("/analytics/orders-raw", params={"revenue_basis": "payment"})
     assert raw_payment.status_code == 200
+
+    ledger_response = client.get("/analytics/orders-ledger")
+    assert ledger_response.status_code == 200
+    ledger = ledger_response.json()
+    assert "items" in ledger
+    assert ledger["items"]
+    first_ledger = ledger["items"][0]
+    assert "order_id" in first_ledger
+    assert "product_name" in first_ledger
+    assert "payment_date" in first_ledger
+    assert "order_detail_status" in first_ledger
