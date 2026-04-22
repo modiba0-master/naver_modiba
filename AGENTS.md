@@ -45,33 +45,32 @@
 ### 테스트
 - `tests/test_order_transformer.py`, `tests/test_services.py`, `tests/test_analytics_api.py` 등으로 상기 규칙 검증.
 
-## 최신 작업 상태 (2026-04-17)
-- 아키텍처 전환:
-  - API 요청 경로에서 네이버 직접 호출 제거
-  - 백엔드 스케줄러가 1분 주기(`order_poll_interval_seconds=60`)로 `sync_orders` + `generate_daily_summary` 수행
-  - `/analytics/*`는 DB 조회 전용으로 유지
-- 안정화:
-  - `daily_summary` 미존재 시 자동 생성 fallback 추가
-  - 스케줄러 락을 thread lock으로 전환(요청 루프 블로킹 방지)
+## 최신 작업 상태 (2026-04-22)
+- 동기화/정확도:
+  - `PAYED_DATETIME` 리스트 응답 축약 이슈 대응: `product-orders/query` 상세 재조회로 필드 보강 후 저장.
+  - query 호출을 청크(300) + 429/5xx 재시도로 안정화(`app/services/naver.py`).
+  - `paymentDate` 누락 행은 `orderDate -> placeOrderDate -> sendDate` fallback 저장으로 누락 방지.
+  - 중복 정책: 상품주문번호 최초 1회 저장, 이후 동일 번호는 기본 무시. 교환/반품/취소만 갱신.
+- DB/원장:
+  - `orders`에 네이버 주문원장 확장 컬럼 다수 추가(배송비/수수료/옵션코드/결제위치 등).
+  - 기존 주문도 재동기화 시 비어있는 확장 컬럼 자동 보강.
+  - 신규 조회 API 추가: `GET /analytics/orders-ledger` (운영/다운로드용 상세 원장), `GET /analytics/orders-claims`.
+- 상태/운영 가시성:
+  - `GET /health`에 DB probe, orders count, latest payment date, scheduled job 상태 포함.
+  - `GET /analytics/db-stats`에 `latest_business_date` 포함.
+- lookback 운영:
+  - 평시 고정 구간(`NAVER_COMMERCE_ORDER_LOOKBACK_HOURS`, 기본 24h).
+  - 수동 누락복구 전용 `NAVER_BACKFILL_LOOKBACK_HOURS`(기본 0, 필요 시만 활성화).
 - 대시보드:
-  - KPI/분석 필터 분리, KPI 일자 테이블(합계 포함), 옵션 환산수량/팩수량/중량단위 표시
-  - 기본 새로고침은 캐시 유지, 강제 새로고침 버튼 분리
-  - API 실패 시 `session_state`의 직전 성공 데이터 fallback 표시
-  - 컬럼명 한글화(`weight_unit`, `pack_count`, `pack_count_sum`, `converted_quantity`)
-- 배포 메모:
-  - Railway 서비스는 `naver_modiba`(백엔드) / `naver_modiba_dashboard`(대시보드) 분리 운영
-  - 메인 API 도메인은 `https://navermodiba-production.up.railway.app`를 기준으로 사용
-  - fallback 502 재발 시 서비스-도메인 매핑과 런타임 로그를 먼저 확인
+  - 기본 API URL을 `https://web-production-0001b.up.railway.app`로 조정.
+  - API/캐시 모두 실패 시 빈 화면 대신 오류 메시지 표시.
+  - 실제 접속 URL: `https://navermodibadashboard-production-5e93.up.railway.app`.
+- 배포/검증:
+  - 최신 배포에서 `inserted_count` 증가(누락분 반영)와 `orders_count` 상승 확인.
+  - 최근 확인값 예시: `orders_count=633`, `latest_payment_date=2026-04-22T17:13:42`, `latest_business_date=2026-04-23`.
 
-## 세션 마무리 메모 (2026-04-17, Request ID: VfSdsATdSJ22qr2aacI7Nw)
-- 상태 확인 결과:
-  - `https://navermodiba-production.up.railway.app/health`는 502 응답 확인
-  - `https://navermodibadashboard-production-5e93.up.railway.app/`는 200 응답 확인
-- 해석:
-  - 대시보드 앱 자체보다는 백엔드 메인 도메인/서비스(`naver_modiba`) 쪽 장애 가능성이 높음
-  - 현재 구조상 대시보드 새로고침/데이터 조회는 네이버 API 직접 호출이 아니라 DB 조회 API 경로를 사용
-- 즉시 이어서 할 일:
-  1. 로컬/작업 터미널에서 `railway login` 재인증
-  2. `naver_modiba` 최신 배포 로그 확인(크래시/포트 바인딩/환경변수 누락 여부)
-  3. 필요 시 `naver_modiba` 재배포/재시작
-  4. `GET /health`, `GET /analytics/orders-raw` 200 복구 확인
+## 참고 규칙 추가
+- `.cursor/rules/naver-commerce-api-reference.mdc` 추가.
+- 네이버 API 작업 시 기술지원 레포와 공식 문서 우선 참고:
+  - https://github.com/commerce-api-naver/commerce-api
+  - https://apicenter.commerce.naver.com/ko/basic/commerce-api
