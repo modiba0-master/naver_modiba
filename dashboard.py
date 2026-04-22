@@ -25,7 +25,7 @@ from streamlit_app.services.kpi_from_filtered import (
 )
 from streamlit_app.services.kpi_ui import add_avg_ticket_to_daily, append_daily_total_row
 
-_PRODUCTION_API = "https://navermodiba-production.up.railway.app"
+_PRODUCTION_API = "https://web-production-0001b.up.railway.app"
 DEFAULT_API_BASE_URL = (os.environ.get("ANALYTICS_API_BASE_URL") or _PRODUCTION_API).strip().rstrip(
     "/"
 )
@@ -300,6 +300,7 @@ def main_content() -> None:
         if isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
             order_df = cached_df.copy()
         else:
+            st.error("주문 데이터를 불러오지 못했습니다. 사이드바 API URL을 확인하세요.")
             st.stop()
 
     if order_df.empty:

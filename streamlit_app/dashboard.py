@@ -29,7 +29,7 @@ from services.kpi_ui import add_avg_ticket_to_daily, append_daily_total_row
 
 # HTTP로 주문 목록·DB 통계를 가져온다. 잘못된 URL이면 "어제와 같은 결과"처럼 보인다(다른/옛 백엔드 DB).
 # Railway: Streamlit 서비스에 `ANALYTICS_API_BASE_URL`로 실제 FastAPI(동기화+MariaDB) URL을 맞출 것.
-_PRODUCTION_API = "https://navermodiba-production.up.railway.app"
+_PRODUCTION_API = "https://web-production-0001b.up.railway.app"
 DEFAULT_API_BASE_URL = (os.environ.get("ANALYTICS_API_BASE_URL") or _PRODUCTION_API).strip().rstrip(
     "/"
 )
@@ -379,6 +379,7 @@ def main_content() -> None:
             data_loaded_at = st.session_state.get("last_data_loaded_at", "")
             data_loaded_mode = "fallback"
         else:
+            st.error("주문 데이터를 불러오지 못했습니다. 사이드바 API URL을 확인하세요.")
             st.stop()
 
     if not data_loaded_at:
