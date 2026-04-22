@@ -446,6 +446,7 @@ def main_content() -> None:
     if kpi_filtered_df.empty:
         st.stop()
 
+    period_days = (kpi_end_date - kpi_start_date).days + 1
     prev_start = kpi_start_date - timedelta(days=7)
     prev_end = kpi_end_date - timedelta(days=7)
     prev_mask = (
