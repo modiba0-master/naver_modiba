@@ -198,9 +198,9 @@ def _render_api_health_caption() -> None:
     last_ok = st.session_state.get("api_last_success_at", "—")
     fail_count = int(st.session_state.get("api_consecutive_failures", 0))
     last_error = st.session_state.get("api_last_error", "")
-    st.caption(f"API 최근 성공: {last_ok} · 연속 실패: {fail_count}회")
+    st.write(f"API 최근 성공: {last_ok} · 연속 실패: {fail_count}회")
     if fail_count > 0 and last_error:
-        st.caption(f"최근 오류: {last_error}")
+        st.write(f"최근 오류: {last_error}")
 
 
 def _safe_autorefresh(interval_ms: int, key: str) -> None:
@@ -369,37 +369,22 @@ def main_content() -> None:
 
     _safe_autorefresh(interval_ms=60000, key="naver_modiba_dashboard_autorefresh")
 
-    st.title("네이버 커머스 주문 분석 대시보드")
+    st.title("네이버 친절한 모디바 주문현황")
     api_base_url = DEFAULT_API_BASE_URL
     revenue_basis = "payment"
-    st.caption(
-        "대시보드는 기본 API URL과 결제 기준 집계를 사용합니다."
-    )
-    with st.expander("결제일시가 여러 행에서 같을 때", expanded=False):
-        st.markdown(
-            "네이버는 **한 번 결제(장바구니)**에 여러 상품주문 줄이 붙으면, "
-            "각 줄에 **같은 결제일시**를 줍니다. 대시보드가 만든 복제가 아니라 API·DB 원본입니다.\n\n"
-            "**일자별 매출·KPI**는 `date` 컬럼(저장된 영업일, 16시 넘으면 익일)을 쓰고, "
-            "`payment_date`는 결제 시각(시·분)입니다."
-        )
     try:
         ds = fetch_db_stats(api_base_url)
         _mark_api_success()
         lp = ds.get("latest_payment_date")
         lb = ds.get("latest_business_date")
-        st.caption(
+        st.write(
             f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · "
             f"최신 결제일시 {lp or '—'} · "
             f"최신 영업일(집계 `date`){lb or '—'}"
         )
-        st.caption(
-            "KPI·일자필터는 **영업일**(`date`)입니다. 22일 16:00 이후 결제는 `date`가 23일로 잡힐 수 있습니다. "
-            "‘22일’만 골랐는데 없으면 **23일**·**결제일시(`payment_date`)** 컬럼을 보세요. "
-            "위 `최신 결제일시`가 며칠 전이면 **동기화/API URL** 문제입니다."
-        )
     except Exception as exc:
         _mark_api_failure(exc)
-        st.caption("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")
+        st.write("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")
     _render_api_health_caption()
 
     data_loaded_at = ""
@@ -433,7 +418,7 @@ def main_content() -> None:
         st.warning("네트워크/API 오류로 캐시된 마지막 정상 데이터를 표시 중입니다.")
 
     default_end = datetime.now(KST).date()
-    default_start = default_end - timedelta(days=6)
+    default_start = default_end
 
     st.markdown("## KPI")
     kpi_col1, kpi_col2 = st.columns(2)
@@ -461,9 +446,8 @@ def main_content() -> None:
     if kpi_filtered_df.empty:
         st.stop()
 
-    period_days = (kpi_end_date - kpi_start_date).days + 1
-    prev_start = kpi_start_date - timedelta(days=period_days)
-    prev_end = kpi_end_date - timedelta(days=period_days)
+    prev_start = kpi_start_date - timedelta(days=7)
+    prev_end = kpi_end_date - timedelta(days=7)
     prev_mask = (
         (order_df["date"].dt.date >= prev_start)
         & (order_df["date"].dt.date <= prev_end)
@@ -481,7 +465,7 @@ def main_content() -> None:
             return None
         return f"{delta_rate(curr, base):.1f}%"
 
-    compare_info = f"vs {prev_start}~{prev_end}"
+    compare_info = f"vs 1주 전 ({prev_start}~{prev_end})"
 
     with st.container(border=True):
         r1a, r1b, r1c, r1d = st.columns(4)
@@ -610,21 +594,18 @@ def main_content() -> None:
             )
             .sort_values("total_amount", ascending=False)
         )
+        product_summary = product_summary[
+            ["product_name", "quantity", "order_count", "total_amount", "real_quantity"]
+        ]
         show_data_grid(product_summary)
 
     with tab_option_sales:
         option_name_summary = (
             analysis_filtered_df.groupby("option_name", as_index=False)
             .agg(
-                weight_unit=(
-                    "weight_unit",
-                    lambda s: next((x for x in s if str(x).strip()), ""),
-                ),
                 total_amount=(_rev_col, "sum"),
                 quantity=("quantity", "sum"),
                 real_quantity=("real_quantity", "sum"),
-                converted_quantity=("converted_quantity", "sum"),
-                pack_count_sum=("pack_count", "sum"),
                 order_count=(
                     "order_id",
                     lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
@@ -632,6 +613,9 @@ def main_content() -> None:
             )
             .sort_values("total_amount", ascending=False)
         )
+        option_name_summary = option_name_summary[
+            ["option_name", "quantity", "order_count", "total_amount", "real_quantity"]
+        ]
         show_data_grid(option_name_summary)
 
     show_data_grid(analysis_filtered_df)
