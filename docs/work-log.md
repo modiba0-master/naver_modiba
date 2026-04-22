@@ -1,5 +1,5 @@
 # Work Log
-<!-- last_commit: d4fb03b -->
+<!-- last_commit: 45d45b6 -->
 
 ## 2026-04-15 Session Summary
 
@@ -91,3 +91,28 @@
 - 검증:
   - 수정 파일 컴파일 검사 통과
   - linter 오류 없음
+
+## 2026-04-22 Dashboard Hardening & UI Refinement
+
+- Dashboard-only 작업 원칙 확정:
+  - `streamlit_app/**` 외 경로는 수정하지 않는 방향으로 진행.
+- 배포 import 안정화:
+  - `streamlit_app/services/data_grid.py`에 `streamlit_app.column_map` -> `column_map` fallback 추가.
+  - Railway `/app` 루트 배포에서 `ModuleNotFoundError: streamlit_app` 대응.
+- 네트워크/운영 안정성 개선:
+  - API 호출 재시도(429/5xx + timeout/transport) 및 백오프 적용.
+  - API 실패 시 마지막 정상 캐시 데이터 fallback + 경고 표시.
+  - API 최근 성공 시각/연속 실패 횟수/최근 오류 노출.
+  - `streamlit_autorefresh` 컴포넌트 로딩 실패 시 자동새로고침만 비활성화하고 앱은 계속 동작.
+- UI 고도화(요청 반영):
+  - 제목 변경: `네이버 친절한 모디바 주문현황`.
+  - 좌측 사이드 메뉴 제거.
+  - 상단 `새로고침` / `강제 새로고침` 버튼 제거.
+  - KPI 기본 조회를 오늘 기준으로 설정하고, 비교는 1주 전 동일 구간으로 고정.
+  - 분석 탭(상품/옵션) 컬럼 순서 정렬:
+    - 이름(상품명/옵션명), 수량, 주문수량, 주문금액, 수량집계.
+- 관련 커밋:
+  - `f87e6f0` dashboard import fallback
+  - `2703853` resilience + UI simplification
+  - `d5fc66e` autorefresh component guard
+  - `45d45b6` title/KPI/analysis column order update

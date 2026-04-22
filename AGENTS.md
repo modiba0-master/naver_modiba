@@ -69,6 +69,32 @@
   - 최신 배포에서 `inserted_count` 증가(누락분 반영)와 `orders_count` 상승 확인.
   - 최근 확인값 예시: `orders_count=633`, `latest_payment_date=2026-04-22T17:13:42`, `latest_business_date=2026-04-23`.
 
+## 대시보드 최신 변경 메모 (2026-04-22, 이어서 작업용)
+- 범위 원칙:
+  - 사용자 요청에 따라 당분간 **대시보드 코드만 수정** (`streamlit_app/**` 중심).
+  - 백엔드(`app/**`)는 명시 요청 없으면 건드리지 않음.
+- 구조/호환:
+  - `streamlit_app/dashboard.py`가 단일 구현.
+  - `streamlit_app/run.py` 및 루트 `dashboard.py`는 포워딩/호환 엔트리.
+- 배포 import 이슈 대응:
+  - `streamlit_app/services/data_grid.py`에서 `streamlit_app.column_map` import 실패 시 `column_map` fallback.
+  - Railway `/app` 루트 배포와 로컬 모노레포 실행을 모두 지원.
+- 안정성 강화:
+  - 대시보드 API 호출에 재시도(429/5xx, 네트워크/타임아웃) + 백오프 적용.
+  - API 실패 시 마지막 정상 캐시 데이터로 fallback + 경고 표시.
+  - API 최근 성공 시각/연속 실패 횟수/최근 오류 표시.
+  - `streamlit_autorefresh` 컴포넌트 로딩 실패 시 자동새로고침만 비활성화하고 화면은 계속 동작.
+- UI 변경:
+  - 제목을 `네이버 친절한 모디바 주문현황`으로 변경.
+  - 좌측 사이드바 제거, 수동 `새로고침/강제 새로고침` 버튼 제거.
+  - 작은 주석성 문구(caption) 최소화/숨김 방향 반영.
+  - KPI 기본 조회는 오늘 단일일자, 비교는 선택 구간의 1주 전 동일 구간.
+  - 분석 탭(상품/옵션) 컬럼 순서를 요청 순서로 고정:
+    - 이름(상품명/옵션명) → 수량 → 주문수량 → 주문금액 → 수량집계
+- 운영 참고:
+  - 웹 링크 반영 지연 시 코드 미반영보다 배포 지연/캐시 가능성이 큼.
+  - Railway에서 최신 커밋 배포 SHA 확인 후 필요 시 `Redeploy (clear cache)`.
+
 ## 참고 규칙 추가
 - `.cursor/rules/naver-commerce-api-reference.mdc` 추가.
 - 네이버 API 작업 시 기술지원 레포와 공식 문서 우선 참고:
