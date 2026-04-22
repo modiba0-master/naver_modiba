@@ -4,6 +4,7 @@ import re
 import os
 import sys
 import time
+from typing import Any
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -47,6 +48,9 @@ REQUIRED_COLUMNS = [
     "amount",
 ]
 KST = ZoneInfo("Asia/Seoul")
+HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=20.0, pool=5.0)
+HTTP_RETRY_ATTEMPTS = 3
+HTTP_RETRY_BACKOFF_SECONDS = 0.8
 
 _WEEKDAY_KO = ("월", "화", "수", "목", "금", "토", "일")
 
@@ -126,16 +130,42 @@ def product_group(product_name: str) -> str:
     return "기타"
 
 
+def _http_get_json_with_retry(
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """일시 장애(타임아웃/네트워크/429/5xx)에 대해 짧은 재시도."""
+    last_error: Exception | None = None
+    for attempt in range(1, HTTP_RETRY_ATTEMPTS + 1):
+        try:
+            response = httpx.get(url, params=params, timeout=HTTP_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            retryable = status == 429 or (status is not None and status >= 500)
+            if not retryable:
+                raise
+            last_error = exc
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_error = exc
+
+        if attempt < HTTP_RETRY_ATTEMPTS:
+            time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("HTTP request failed without captured exception")
+
+
 @st.cache_data(ttl=60)
 def fetch_order_data(base_url: str, revenue_basis: str = "payment") -> pd.DataFrame:
     url = base_url.rstrip("/")
-    response = httpx.get(
+    payload = _http_get_json_with_retry(
         f"{url}/analytics/orders-raw",
         params={"revenue_basis": revenue_basis},
-        timeout=30,
     )
-    response.raise_for_status()
-    payload = response.json()
     items = payload.get("items", [])
     return pd.DataFrame(items)
 
@@ -144,9 +174,29 @@ def fetch_order_data(base_url: str, revenue_basis: str = "payment") -> pd.DataFr
 def fetch_db_stats(base_url: str) -> dict[str, object]:
     """`/analytics/db-stats` — 원장 건수·최신 결제일시(실시간 DB 확인용)."""
     url = base_url.rstrip("/")
-    r = httpx.get(f"{url}/analytics/db-stats", timeout=15)
-    r.raise_for_status()
-    return r.json()
+    return _http_get_json_with_retry(f"{url}/analytics/db-stats")
+
+
+def _mark_api_success() -> None:
+    st.session_state["api_last_success_at"] = format_now_kst()
+    st.session_state["api_consecutive_failures"] = 0
+    st.session_state["api_last_error"] = ""
+
+
+def _mark_api_failure(exc: Exception) -> None:
+    st.session_state["api_consecutive_failures"] = int(
+        st.session_state.get("api_consecutive_failures", 0)
+    ) + 1
+    st.session_state["api_last_error"] = str(exc)[:180]
+
+
+def _render_api_health_caption() -> None:
+    last_ok = st.session_state.get("api_last_success_at", "—")
+    fail_count = int(st.session_state.get("api_consecutive_failures", 0))
+    last_error = st.session_state.get("api_last_error", "")
+    st.caption(f"API 최근 성공: {last_ok} · 연속 실패: {fail_count}회")
+    if fail_count > 0 and last_error:
+        st.caption(f"최근 오류: {last_error}")
 
 
 def _normalize_api_column_name(name: object) -> str:
@@ -301,67 +351,38 @@ def main_content() -> None:
 
     st_autorefresh(interval=60000, key="naver_modiba_dashboard_autorefresh")
 
-    header_left, header_right = st.columns([5, 1])
-    with header_left:
-        st.title("네이버 커머스 주문 분석 대시보드")
-    with header_right:
-        st.markdown("")
-        if "last_click" not in st.session_state:
-            st.session_state.last_click = 0.0
-        if st.button("새로고침"):
-            now = time.time()
-            if now - st.session_state.last_click >= 5:
-                st.session_state.last_click = now
-                fetch_order_data.clear()
-                fetch_db_stats.clear()
-                st.rerun()
-        if st.button("강제 새로고침"):
-            st.cache_data.clear()
-            for _k in ("last_good_order_df", "kpi_start_date", "kpi_end_date",
-                       "analysis_start_date", "analysis_end_date"):
-                st.session_state.pop(_k, None)
-            st.rerun()
-
-    with st.sidebar:
-        st.header("API")
+    st.title("네이버 커머스 주문 분석 대시보드")
+    api_base_url = DEFAULT_API_BASE_URL
+    revenue_basis = "payment"
+    st.caption(
+        "대시보드는 기본 API URL과 결제 기준 집계를 사용합니다."
+    )
+    with st.expander("결제일시가 여러 행에서 같을 때", expanded=False):
+        st.markdown(
+            "네이버는 **한 번 결제(장바구니)**에 여러 상품주문 줄이 붙으면, "
+            "각 줄에 **같은 결제일시**를 줍니다. 대시보드가 만든 복제가 아니라 API·DB 원본입니다.\n\n"
+            "**일자별 매출·KPI**는 `date` 컬럼(저장된 영업일, 16시 넘으면 익일)을 쓰고, "
+            "`payment_date`는 결제 시각(시·분)입니다."
+        )
+    try:
+        ds = fetch_db_stats(api_base_url)
+        _mark_api_success()
+        lp = ds.get("latest_payment_date")
+        lb = ds.get("latest_business_date")
         st.caption(
-            "이 URL의 FastAPI가 `sync_orders`로 쓰는 DB와, 대시보드 `DATABASE_URL`이 **같은** MariaDB여야 최신·일치한 데이터가 보입니다."
+            f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · "
+            f"최신 결제일시 {lp or '—'} · "
+            f"최신 영업일(집계 `date`){lb or '—'}"
         )
-        api_base_url = st.text_input("API URL", value=DEFAULT_API_BASE_URL).rstrip("/")
-        revenue_basis = st.selectbox(
-            "집계 기준",
-            options=["payment", "order", "shipping"],
-            index=0,
-            format_func=lambda x: {
-                "payment": "결제",
-                "order": "주문",
-                "shipping": "발송",
-            }[x],
-            key="revenue_basis_select",
+        st.caption(
+            "KPI·일자필터는 **영업일**(`date`)입니다. 22일 16:00 이후 결제는 `date`가 23일로 잡힐 수 있습니다. "
+            "‘22일’만 골랐는데 없으면 **23일**·**결제일시(`payment_date`)** 컬럼을 보세요. "
+            "위 `최신 결제일시`가 며칠 전이면 **동기화/API URL** 문제입니다."
         )
-        with st.expander("결제일시가 여러 행에서 같을 때", expanded=False):
-            st.markdown(
-                "네이버는 **한 번 결제(장바구니)**에 여러 상품주문 줄이 붙으면, "
-                "각 줄에 **같은 결제일시**를 줍니다. 대시보드가 만든 복제가 아니라 API·DB 원본입니다.\n\n"
-                "**일자별 매출·KPI**는 `date` 컬럼(저장된 영업일, 16시 넘으면 익일)을 쓰고, "
-                "`payment_date`는 결제 시각(시·분)입니다."
-            )
-        try:
-            ds = fetch_db_stats(api_base_url)
-            lp = ds.get("latest_payment_date")
-            lb = ds.get("latest_business_date")
-            st.caption(
-                f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · "
-                f"최신 결제일시 {lp or '—'} · "
-                f"최신 영업일(집계 `date`){lb or '—'}"
-            )
-            st.caption(
-                "KPI·일자필터는 **영업일**(`date`)입니다. 22일 16:00 이후 결제는 `date`가 23일로 잡힐 수 있습니다. "
-                "‘22일’만 골랐는데 없으면 **23일**·**결제일시(`payment_date`)** 컬럼을 보세요. "
-                "위 `최신 결제일시`가 며칠 전이면 **동기화/API URL** 문제입니다."
-            )
-        except Exception:
-            st.caption("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")
+    except Exception as exc:
+        _mark_api_failure(exc)
+        st.caption("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")
+    _render_api_health_caption()
 
     data_loaded_at = ""
     data_loaded_mode = "live"
@@ -372,7 +393,9 @@ def main_content() -> None:
         data_loaded_at = format_now_kst()
         st.session_state["last_data_loaded_at"] = data_loaded_at
         st.session_state["last_data_loaded_mode"] = "live"
-    except Exception:
+        _mark_api_success()
+    except Exception as exc:
+        _mark_api_failure(exc)
         cached_df = st.session_state.get("last_good_order_df")
         if isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
             order_df = cached_df.copy()
@@ -387,6 +410,9 @@ def main_content() -> None:
 
     if order_df.empty:
         st.stop()
+
+    if data_loaded_mode == "fallback":
+        st.warning("네트워크/API 오류로 캐시된 마지막 정상 데이터를 표시 중입니다.")
 
     default_end = datetime.now(KST).date()
     default_start = default_end - timedelta(days=6)
