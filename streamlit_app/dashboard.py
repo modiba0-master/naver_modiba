@@ -13,7 +13,11 @@ import httpx
 import pandas as pd
 import streamlit as st
 from sqlalchemy import text
-from streamlit_autorefresh import st_autorefresh
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:  # pragma: no cover - optional component in deploy
+    st_autorefresh = None
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -199,6 +203,20 @@ def _render_api_health_caption() -> None:
         st.caption(f"최근 오류: {last_error}")
 
 
+def _safe_autorefresh(interval_ms: int, key: str) -> None:
+    """컴포넌트 로딩 실패 시에도 앱이 중단되지 않게 보호."""
+    if st_autorefresh is None:
+        return
+    try:
+        st_autorefresh(interval=interval_ms, key=key)
+    except Exception:
+        # 배포 네트워크/프록시 이슈로 component asset 로드가 실패할 수 있다.
+        # 자동 새로고침만 비활성화하고 나머지 대시보드는 정상 동작시킨다.
+        if not st.session_state.get("_autorefresh_component_warned", False):
+            st.warning("자동 새로고침 컴포넌트 로딩에 실패해 자동 새로고침을 비활성화했습니다.")
+            st.session_state["_autorefresh_component_warned"] = True
+
+
 def _normalize_api_column_name(name: object) -> str:
     """API 응답 컬럼명을 내부 표준 snake_case로 정규화."""
     text = str(name).strip()
@@ -349,7 +367,7 @@ def main_content() -> None:
         fetch_order_data.clear()
         fetch_db_stats.clear()
 
-    st_autorefresh(interval=60000, key="naver_modiba_dashboard_autorefresh")
+    _safe_autorefresh(interval_ms=60000, key="naver_modiba_dashboard_autorefresh")
 
     st.title("네이버 커머스 주문 분석 대시보드")
     api_base_url = DEFAULT_API_BASE_URL
