@@ -1,12 +1,7 @@
 import sys
-from pathlib import Path
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
-
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
 
 try:
     from dotenv import load_dotenv
@@ -15,7 +10,7 @@ try:
 except ImportError:
     pass
 
-from app.config import settings
+from services.db_url import get_streamlit_database_url
 
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
@@ -24,9 +19,17 @@ _SessionLocal: sessionmaker[Session] | None = None
 def get_engine() -> Engine:
     global _engine
     if _engine is None:
-        database_url = (settings.database_url or "").strip()
+        database_url = (get_streamlit_database_url() or "").strip()
         if not database_url:
             raise RuntimeError("DATABASE_URL is not set.")
+        if "pytest" not in sys.modules:
+            from sqlalchemy.engine.url import make_url
+
+            try:
+                p = make_url(database_url)
+                print(f"[streamlit] DB host={p.host!r} (services.db_url, no app package)")
+            except Exception:
+                pass
         _engine = create_engine(database_url, pool_pre_ping=True)
     return _engine
 
@@ -39,4 +42,3 @@ def SessionLocal() -> Session:
             bind=get_engine(), autocommit=False, autoflush=False
         )
     return _SessionLocal()
-

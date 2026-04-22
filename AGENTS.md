@@ -38,9 +38,9 @@
 - **`scripts/recompute_business_dates.py`**: MySQL/SQLite/PG에 맞춰 **`business_date`·`payment_business_date` 벌크 UPDATE** (16시 CASE) 후 Python 배치로 주문·발송 영업일·`net_revenue` 정리. `--no-bulk-sql` / `--verify-only` 지원.
 
 ### 설정·로컬 DB (Railway)
-- **`load_dotenv()`**: `app/config.py` 최상단 + `streamlit_app/services/db.py`에서 프로젝트 루트 `sys.path` 후 로드.
-- **`app/db_url_utils.py`**: 비밀번호 URL 파싱 실패 시 `quote_plus` 재인코딩, `print_database_url_diagnostics` (호스트·`public_host`·마스킹 URL). **`pytest`가 로드된 경우에는 print 생략**.
-- **로컬에서 `*.railway.internal` 연결 불가** 시: `.env`에 `DATABASE_URL_USE_PUBLIC=1` + Railway **`DATABASE_PUBLIC_URL`** 설정.
+- **FastAPI `app/config.py`**: `load_dotenv` (optional), `app/db_url_utils.py`로 URL 정규화·시작 시 진단 print (`pytest` 제외).
+- **Streamlit** (`streamlit_app`만 배포): **`app` 패키지 없음** — `streamlit_app/services/db_url.py`의 `get_streamlit_database_url()`로 `DATABASE_URL` / `DATABASE_URL_USE_PUBLIC` + `DATABASE_PUBLIC_URL` / 비밀번호 인코딩을 **API와 동일 규칙**으로 처리. `services/db.py`는 `app.config`를 import 하지 않는다.
+- **로컬에서 `*.railway.internal` 연결 불가** 시: `DATABASE_URL_USE_PUBLIC=1` + `DATABASE_PUBLIC_URL`.
 
 ### 테스트
 - `tests/test_order_transformer.py`, `tests/test_services.py`, `tests/test_analytics_api.py` 등으로 상기 규칙 검증.
