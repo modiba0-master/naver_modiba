@@ -445,6 +445,70 @@ def _prepare_detail_ledger_for_display(
     return ledger, guidance
 
 
+def _daily_summary_from_orders(frame: pd.DataFrame, target_date: date) -> dict[str, float]:
+    day_df = frame[frame["date"].dt.date == target_date].copy()
+    if day_df.empty:
+        return {
+            "total_amount": 0.0,
+            "order_count": 0.0,
+            "order_quantity": 0.0,
+            "sold_quantity": 0.0,
+            "customer_count": 0.0,
+        }
+    amount_col = "net_revenue" if "net_revenue" in day_df.columns else "amount"
+    return {
+        "total_amount": float(pd.to_numeric(day_df[amount_col], errors="coerce").fillna(0).sum()),
+        "order_count": float(day_df["order_id"].astype(str).replace("", pd.NA).dropna().nunique()),
+        "order_quantity": float(pd.to_numeric(day_df["quantity"], errors="coerce").fillna(0).sum()),
+        "sold_quantity": float(pd.to_numeric(day_df["real_quantity"], errors="coerce").fillna(0).sum()),
+        "customer_count": float(day_df["buyer_id"].astype(str).replace("", pd.NA).dropna().nunique()),
+    }
+
+
+def _product_revenue_delta_table(
+    frame: pd.DataFrame,
+    current_date: date,
+    compare_date: date,
+) -> pd.DataFrame:
+    amount_col = "net_revenue" if "net_revenue" in frame.columns else "amount"
+    curr = (
+        frame[frame["date"].dt.date == current_date]
+        .groupby("product_name", as_index=False)
+        .agg(current_revenue=(amount_col, "sum"))
+    )
+    prev = (
+        frame[frame["date"].dt.date == compare_date]
+        .groupby("product_name", as_index=False)
+        .agg(prev_revenue=(amount_col, "sum"))
+    )
+    merged = curr.merge(prev, on="product_name", how="outer").fillna(0.0)
+    if merged.empty:
+        return merged
+    merged["revenue_diff"] = merged["current_revenue"] - merged["prev_revenue"]
+    merged["revenue_diff_pct"] = merged.apply(
+        lambda r: ((r["revenue_diff"] / r["prev_revenue"]) * 100.0) if r["prev_revenue"] > 0 else 0.0,
+        axis=1,
+    )
+    return merged.sort_values("revenue_diff", ascending=False)
+
+
+def _simple_nextday_forecast(frame: pd.DataFrame, report_date: date) -> tuple[float, str]:
+    amount_col = "net_revenue" if "net_revenue" in frame.columns else "amount"
+    daily = (
+        frame[frame["date"].dt.date <= report_date]
+        .assign(_d=lambda df: df["date"].dt.date)
+        .groupby("_d", as_index=False)
+        .agg(total_amount=(amount_col, "sum"))
+        .sort_values("_d")
+    )
+    if daily.empty:
+        return 0.0, "하"
+    recent = daily.tail(7)
+    forecast = float(pd.to_numeric(recent["total_amount"], errors="coerce").fillna(0).mean())
+    confidence = "상" if len(recent) >= 7 else ("중" if len(recent) >= 4 else "하")
+    return forecast, confidence
+
+
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
 
 
@@ -567,6 +631,74 @@ def main_content() -> None:
     now_kst = datetime.now(KST)
     default_end = now_kst.date() + timedelta(days=1) if now_kst.hour >= 16 else now_kst.date()
     default_start = default_end
+
+    section_heading("경영 요약 리포트")
+    report_date = default_end
+    compare_date = report_date - timedelta(days=7)
+    report_summary = _daily_summary_from_orders(order_df, report_date)
+    compare_summary = _daily_summary_from_orders(order_df, compare_date)
+    forecast_amount, forecast_conf = _simple_nextday_forecast(order_df, report_date)
+
+    def _delta_text(curr: float, prev: float) -> str:
+        if prev == 0:
+            return "0.0%"
+        return f"{((curr - prev) / prev) * 100.0:.1f}%"
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric(
+        "순매출",
+        f"{report_summary['total_amount']:,.0f}원",
+        _delta_text(report_summary["total_amount"], compare_summary["total_amount"]),
+    )
+    m2.metric(
+        "주문건수",
+        f"{int(report_summary['order_count']):,}",
+        _delta_text(report_summary["order_count"], compare_summary["order_count"]),
+    )
+    m3.metric(
+        "주문수량",
+        f"{report_summary['order_quantity']:,.0f}",
+        _delta_text(report_summary["order_quantity"], compare_summary["order_quantity"]),
+    )
+    m4.metric(
+        "판매수량",
+        f"{report_summary['sold_quantity']:,.0f}",
+        _delta_text(report_summary["sold_quantity"], compare_summary["sold_quantity"]),
+    )
+    m5.metric(
+        "고객수",
+        f"{int(report_summary['customer_count']):,}",
+        _delta_text(report_summary["customer_count"], compare_summary["customer_count"]),
+    )
+    st.caption(
+        f"기준일 {report_date} · 전주 비교일 {compare_date} · "
+        f"내일 예상 매출 {forecast_amount:,.0f}원 (신뢰도 {forecast_conf})"
+    )
+
+    product_delta = _product_revenue_delta_table(order_df, report_date, compare_date)
+    rise_col, fall_col = st.columns(2)
+    with rise_col:
+        st.markdown("#### 전주 대비 상승 상품 Top5")
+        rise_df = product_delta.head(5)[["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]]
+        show_data_grid(rise_df, keep_input_order=True)
+    with fall_col:
+        st.markdown("#### 전주 대비 하락 상품 Top5")
+        fall_df = product_delta.sort_values("revenue_diff").head(5)[
+            ["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]
+        ]
+        show_data_grid(fall_df, keep_input_order=True)
+
+    action_msgs: list[str] = []
+    if report_summary["total_amount"] < compare_summary["total_amount"]:
+        action_msgs.append("순매출이 전주 대비 하락: 하락 Top 상품 옵션/가격/노출 상태를 우선 점검하세요.")
+    if report_summary["customer_count"] < compare_summary["customer_count"]:
+        action_msgs.append("고객수가 감소: 최근 2주 미주문 고객 리마인드(해피콜/메시지) 캠페인을 진행하세요.")
+    if forecast_amount < report_summary["total_amount"]:
+        action_msgs.append("내일 예상 매출이 오늘보다 낮음: 상위 상품 재구매 유도 번들/쿠폰을 사전 노출하세요.")
+    if not action_msgs:
+        action_msgs.append("주요 지표가 안정적입니다. 상승 상품 재고/배송 품질 유지에 집중하세요.")
+    st.info("오늘 실행 액션: " + " / ".join(action_msgs[:3]))
+    st.markdown("---")
 
     section_heading("KPI")
     kpi_col1, kpi_col2 = st.columns(2)
