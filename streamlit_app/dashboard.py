@@ -4,6 +4,7 @@ import re
 import os
 import sys
 import time
+import hmac
 from typing import Any
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -338,30 +339,55 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
 
 
+def _read_secret_or_env(key: str) -> str | None:
+    """Streamlit secrets 우선, 없으면 환경변수에서 읽는다."""
+    try:
+        value = st.secrets.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:
+        pass
+    env_value = os.environ.get(key)
+    if isinstance(env_value, str) and env_value.strip():
+        return env_value.strip()
+    return None
+
+
+def _verify_credentials(username: str, password: str) -> bool:
+    """아이디/비밀번호를 안전하게 비교한다."""
+    expected_username = _read_secret_or_env("DASHBOARD_USERNAME")
+    expected_password = _read_secret_or_env("DASHBOARD_PASSWORD")
+
+    if expected_username is None:
+        expected_username = "admin"
+
+    if expected_password is None:
+        return False
+
+    username_ok = hmac.compare_digest(username.strip(), expected_username)
+    password_ok = hmac.compare_digest(password, expected_password)
+    return username_ok and password_ok
+
+
 def _require_login() -> bool:
     if st.session_state.get("authenticated", False):
         return True
 
     st.title("🔐 보안 접속")
-    password = st.text_input("비밀번호를 입력하세요", type="password")
-    if st.button("로그인", type="primary"):
-        actual_password = None
-        try:
-            actual_password = st.secrets.get("PASSWORD")
-        except Exception:
-            pass
-
-        if not actual_password:
-            actual_password = os.environ.get("PASSWORD")
-
-        if password == actual_password and actual_password is not None:
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("아이디")
+        password = st.text_input("비밀번호", type="password")
+        submit = st.form_submit_button("로그인", type="primary")
+    if submit:
+        if _verify_credentials(username=username, password=password):
             st.session_state.authenticated = True
+            st.session_state["auth_user"] = username.strip()
             st.session_state["_refresh_orders_after_login"] = True
             fetch_order_data.clear()
             fetch_db_stats.clear()
             st.rerun()
         else:
-            st.error("비밀번호가 틀렸습니다.")
+            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
 
     st.stop()
     return False
