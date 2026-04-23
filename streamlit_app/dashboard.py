@@ -700,9 +700,9 @@ def main_content() -> None:
         product_summary = product_summary[
             [
                 "product_name",
+                "order_count",
                 "total_amount",
                 "sales_share_pct",
-                "order_count",
                 "sold_quantity",
                 "amount_per_order",
             ]
@@ -718,9 +718,9 @@ def main_content() -> None:
         option_name_summary = option_name_summary[
             [
                 "option_name",
+                "order_count",
                 "total_amount",
                 "sales_share_pct",
-                "order_count",
                 "sold_quantity",
                 "amount_per_order",
             ]
