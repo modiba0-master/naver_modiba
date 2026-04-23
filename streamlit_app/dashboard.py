@@ -70,6 +70,15 @@ def _format_sales_date_label(d: date) -> str:
     return f"{d.isoformat()} ({_WEEKDAY_KO[d.weekday()]})"
 
 
+def _format_sales_date_compact(value: object) -> str:
+    """상세 원장용 매출 집계일 표기: M/D (요일)."""
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return ""
+    d = ts.date()
+    return f"{d.month}/{d.day} ({_WEEKDAY_KO[d.weekday()]})"
+
+
 def _aggregate_kpi_daily(kpi_daily_table: pd.DataFrame) -> pd.DataFrame:
     """매출 집계일별 주문금액·건수·수량 합계 (`date` = 저장된 `business_date`)."""
     if kpi_daily_table.empty:
@@ -336,6 +345,58 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _prepare_analysis_summary(
+    frame: pd.DataFrame,
+    *,
+    group_key: str,
+    revenue_column: str,
+) -> pd.DataFrame:
+    grouped = (
+        frame.groupby(group_key, as_index=False)
+        .agg(
+            total_amount=(revenue_column, "sum"),
+            quantity=("quantity", "sum"),
+            sold_quantity=("real_quantity", "sum"),
+            order_count=(
+                "order_id",
+                lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
+            ),
+        )
+        .sort_values("total_amount", ascending=False)
+    )
+    total_amount_sum = float(grouped["total_amount"].sum()) if not grouped.empty else 0.0
+    if total_amount_sum > 0:
+        grouped["sales_share_pct"] = grouped["total_amount"] / total_amount_sum * 100.0
+    else:
+        grouped["sales_share_pct"] = 0.0
+    grouped["amount_per_order"] = grouped["total_amount"] / grouped["order_count"].replace(0, pd.NA)
+    grouped["amount_per_order"] = grouped["amount_per_order"].fillna(0.0)
+    return grouped
+
+
+def _prepare_detail_ledger_for_display(
+    frame: pd.DataFrame,
+) -> tuple[pd.DataFrame, str | None]:
+    """상세 주문 원장 표시 규칙: 집계일 포맷/일부 컬럼 숨김/안내문 상단 분리."""
+    ledger = frame.copy()
+    guidance: str | None = None
+
+    if "aggregation_window_kst" in ledger.columns:
+        guide_series = ledger["aggregation_window_kst"].dropna().astype(str).str.strip()
+        guide_series = guide_series[guide_series != ""]
+        if not guide_series.empty:
+            guidance = guide_series.iloc[0]
+        ledger = ledger.drop(columns=["aggregation_window_kst"])
+
+    if "content_order_no" in ledger.columns:
+        ledger = ledger.drop(columns=["content_order_no"])
+
+    if "date" in ledger.columns:
+        ledger["date"] = ledger["date"].map(_format_sales_date_compact)
+
+    return ledger, guidance
+
+
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
 
 
@@ -580,6 +641,17 @@ def main_content() -> None:
     show_data_grid(daily_kpi)
 
     st.markdown("---")
+    view_mode = st.radio(
+        "화면 보기",
+        options=["요약", "분석"],
+        horizontal=True,
+        key="dashboard_view_mode",
+    )
+    if view_mode == "요약":
+        st.info("분석 표는 상단 화면 보기에서 `분석`을 선택하면 확인할 수 있습니다.")
+        return
+
+    st.markdown("---")
     section_heading("분석")
     ana_col1, ana_col2 = st.columns(2)
     with ana_col1:
@@ -620,44 +692,46 @@ def main_content() -> None:
     tab_product_sales, tab_option_sales = st.tabs(["상품", "옵션"])
 
     with tab_product_sales:
-        product_summary = (
-            analysis_filtered_df.groupby("product_name", as_index=False)
-            .agg(
-                total_amount=(_rev_col, "sum"),
-                quantity=("quantity", "sum"),
-                real_quantity=("real_quantity", "sum"),
-                order_count=(
-                    "order_id",
-                    lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
-                ),
-            )
-            .sort_values("total_amount", ascending=False)
+        product_summary = _prepare_analysis_summary(
+            analysis_filtered_df,
+            group_key="product_name",
+            revenue_column=_rev_col,
         )
         product_summary = product_summary[
-            ["product_name", "quantity", "order_count", "total_amount", "real_quantity"]
+            [
+                "product_name",
+                "total_amount",
+                "sales_share_pct",
+                "order_count",
+                "sold_quantity",
+                "amount_per_order",
+            ]
         ]
         show_data_grid(product_summary)
 
     with tab_option_sales:
-        option_name_summary = (
-            analysis_filtered_df.groupby("option_name", as_index=False)
-            .agg(
-                total_amount=(_rev_col, "sum"),
-                quantity=("quantity", "sum"),
-                real_quantity=("real_quantity", "sum"),
-                order_count=(
-                    "order_id",
-                    lambda s: s.astype(str).replace("", pd.NA).dropna().nunique(),
-                ),
-            )
-            .sort_values("total_amount", ascending=False)
+        option_name_summary = _prepare_analysis_summary(
+            analysis_filtered_df,
+            group_key="option_name",
+            revenue_column=_rev_col,
         )
         option_name_summary = option_name_summary[
-            ["option_name", "quantity", "order_count", "total_amount", "real_quantity"]
+            [
+                "option_name",
+                "total_amount",
+                "sales_share_pct",
+                "order_count",
+                "sold_quantity",
+                "amount_per_order",
+            ]
         ]
         show_data_grid(option_name_summary)
 
-    show_data_grid(analysis_filtered_df)
+    with st.expander("상세 주문 원장 보기", expanded=False):
+        detail_ledger, guidance_text = _prepare_detail_ledger_for_display(analysis_filtered_df)
+        if guidance_text:
+            st.caption(f"참조 · 매출집계일 안내: {guidance_text}")
+        show_data_grid(detail_ledger)
 
 
 if _require_login():
