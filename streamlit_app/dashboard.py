@@ -588,6 +588,92 @@ def _build_product_insight_table(
     return merged.sort_values("revenue_diff", ascending=False)
 
 
+def _safe_date(value: object) -> date | None:
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return ts.date()
+
+
+def _build_happycall_candidates(frame: pd.DataFrame, report_date: date) -> pd.DataFrame:
+    """고객별 이탈 위험/해피콜 우선순위 후보를 계산한다."""
+    rows: list[dict[str, object]] = []
+    for buyer_id, grp in frame.groupby("buyer_id"):
+        buyer = str(buyer_id or "").strip()
+        if not buyer:
+            continue
+        g = grp.sort_values("date")
+        order_days = sorted(
+            {d for d in (_safe_date(v) for v in g["date"]) if d is not None}
+        )
+        if not order_days:
+            continue
+        last_order_date = order_days[-1]
+        order_count = len(order_days)
+        total_revenue = float(pd.to_numeric(g["net_revenue"], errors="coerce").fillna(0).sum())
+        customer_name = str(g["buyer_name"].dropna().iloc[-1]) if g["buyer_name"].notna().any() else ""
+
+        if order_count >= 2:
+            cycles = [
+                (order_days[i] - order_days[i - 1]).days
+                for i in range(1, len(order_days))
+                if (order_days[i] - order_days[i - 1]).days > 0
+            ]
+            avg_cycle_days = float(sum(cycles) / len(cycles)) if cycles else 7.0
+        else:
+            avg_cycle_days = 7.0
+
+        expected_next = last_order_date + timedelta(days=max(1, int(round(avg_cycle_days))))
+        delay_days = (report_date - expected_next).days
+        if delay_days < 0:
+            delay_days = 0
+
+        if order_count == 1:
+            segment = "신규"
+        elif order_count <= 3:
+            segment = "성장"
+        elif delay_days >= max(2, int(round(avg_cycle_days * 0.5))):
+            segment = "휴면위험"
+        else:
+            segment = "충성"
+
+        score = min(delay_days * 10, 60) + min(order_count * 4, 20) + min(total_revenue / 100000, 20)
+        if segment == "휴면위험":
+            score += 10
+
+        if segment == "신규":
+            action = "첫 구매 만족도 확인 + 재구매 쿠폰 안내"
+        elif segment == "휴면위험":
+            action = "이탈 방지 해피콜 + 재구매 혜택 제안"
+        elif segment == "성장":
+            action = "주기 도래 전 리마인드 메시지/콜"
+        else:
+            action = "충성 고객 감사 혜택 안내"
+
+        rows.append(
+            {
+                "buyer_id": buyer,
+                "buyer_name": customer_name,
+                "segment": segment,
+                "order_count_lifetime": order_count,
+                "revenue_lifetime": total_revenue,
+                "last_order_date": last_order_date,
+                "avg_cycle_days": avg_cycle_days,
+                "expected_next_order_date": expected_next,
+                "delay_days": delay_days,
+                "priority_score": float(score),
+                "recommended_action": action,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows).sort_values(
+        ["priority_score", "delay_days", "revenue_lifetime"],
+        ascending=[False, False, False],
+    )
+    return out
+
+
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
 
 
@@ -797,6 +883,40 @@ def main_content() -> None:
         ]
         st.caption("기준: 오늘 vs 전주 동일요일, 내일 예측은 최근 7일 평균")
         show_data_grid(product_insight[insight_cols].head(20), keep_input_order=True)
+    st.markdown("---")
+
+    section_heading("고객 이탈/해피콜 실행판", level=3)
+    happycall_df = _build_happycall_candidates(order_df, report_date)
+    if happycall_df.empty:
+        st.caption("해피콜 대상 계산을 위한 고객 데이터가 없습니다.")
+    else:
+        total_candidates = len(happycall_df)
+        risk_count = int((happycall_df["segment"] == "휴면위험").sum())
+        avg_delay = float(pd.to_numeric(happycall_df["delay_days"], errors="coerce").fillna(0).mean())
+        top_revenue_target = float(
+            pd.to_numeric(happycall_df.head(20)["revenue_lifetime"], errors="coerce").fillna(0).sum()
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("오늘 콜 대상(추천)", f"{total_candidates:,}")
+        c2.metric("휴면위험 고객", f"{risk_count:,}")
+        c3.metric("평균 지연일", f"{avg_delay:.1f}일")
+        c4.metric("우선대상 예상 LTV", f"{top_revenue_target:,.0f}원")
+
+        st.caption("우선순위 점수 기준 상위 고객부터 해피콜 실행")
+        call_cols = [
+            "buyer_id",
+            "buyer_name",
+            "segment",
+            "last_order_date",
+            "expected_next_order_date",
+            "delay_days",
+            "order_count_lifetime",
+            "revenue_lifetime",
+            "priority_score",
+            "recommended_action",
+        ]
+        show_data_grid(happycall_df[call_cols].head(30), keep_input_order=True)
     st.markdown("---")
 
     section_heading("KPI")
