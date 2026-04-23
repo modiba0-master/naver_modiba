@@ -833,433 +833,430 @@ def main_content() -> None:
     default_end = now_kst.date() + timedelta(days=1) if now_kst.hour >= 16 else now_kst.date()
     default_start = default_end
 
-    section_heading("경영 요약 리포트")
+    tab_kpi, tab_summary, tab_customer, tab_product, tab_margin, tab_detail = st.tabs(
+        ["KPI", "요약", "고객", "상품", "마진", "분석상세"]
+    )
+
     report_date = default_end
     compare_date = report_date - timedelta(days=7)
     report_summary = _daily_summary_from_orders(order_df, report_date)
     compare_summary = _daily_summary_from_orders(order_df, compare_date)
     forecast_amount, forecast_conf = _simple_nextday_forecast(order_df, report_date)
+    product_delta = _product_revenue_delta_table(order_df, report_date, compare_date)
+    product_insight = _build_product_insight_table(order_df, report_date, compare_date)
+    happycall_df = _build_happycall_candidates(order_df, report_date)
+    margin_df = load_option_margin_snapshot(report_date)
 
     def _delta_text(curr: float, prev: float) -> str:
         if prev == 0:
             return "0.0%"
         return f"{((curr - prev) / prev) * 100.0:.1f}%"
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric(
-        "순매출",
-        f"{report_summary['total_amount']:,.0f}원",
-        _delta_text(report_summary["total_amount"], compare_summary["total_amount"]),
-    )
-    m2.metric(
-        "주문건수",
-        f"{int(report_summary['order_count']):,}",
-        _delta_text(report_summary["order_count"], compare_summary["order_count"]),
-    )
-    m3.metric(
-        "주문수량",
-        f"{report_summary['order_quantity']:,.0f}",
-        _delta_text(report_summary["order_quantity"], compare_summary["order_quantity"]),
-    )
-    m4.metric(
-        "판매수량",
-        f"{report_summary['sold_quantity']:,.0f}",
-        _delta_text(report_summary["sold_quantity"], compare_summary["sold_quantity"]),
-    )
-    m5.metric(
-        "고객수",
-        f"{int(report_summary['customer_count']):,}",
-        _delta_text(report_summary["customer_count"], compare_summary["customer_count"]),
-    )
-    st.caption(
-        f"기준일 {report_date} · 전주 비교일 {compare_date} · "
-        f"내일 예상 매출 {forecast_amount:,.0f}원 (신뢰도 {forecast_conf})"
-    )
-
-    product_delta = _product_revenue_delta_table(order_df, report_date, compare_date)
-    rise_col, fall_col = st.columns(2)
-    with rise_col:
-        st.markdown("#### 전주 대비 상승 상품 Top5")
-        rise_df = product_delta.head(5)[["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]]
-        show_data_grid(rise_df, keep_input_order=True)
-    with fall_col:
-        st.markdown("#### 전주 대비 하락 상품 Top5")
-        fall_df = product_delta.sort_values("revenue_diff").head(5)[
-            ["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]
-        ]
-        show_data_grid(fall_df, keep_input_order=True)
-
-    action_msgs: list[str] = []
-    if report_summary["total_amount"] < compare_summary["total_amount"]:
-        action_msgs.append("순매출이 전주 대비 하락: 하락 Top 상품 옵션/가격/노출 상태를 우선 점검하세요.")
-    if report_summary["customer_count"] < compare_summary["customer_count"]:
-        action_msgs.append("고객수가 감소: 최근 2주 미주문 고객 리마인드(해피콜/메시지) 캠페인을 진행하세요.")
-    if forecast_amount < report_summary["total_amount"]:
-        action_msgs.append("내일 예상 매출이 오늘보다 낮음: 상위 상품 재구매 유도 번들/쿠폰을 사전 노출하세요.")
-    if not action_msgs:
-        action_msgs.append("주요 지표가 안정적입니다. 상승 상품 재고/배송 품질 유지에 집중하세요.")
-    st.info("오늘 실행 액션: " + " / ".join(action_msgs[:3]))
-    st.markdown("---")
-
-    section_heading("상품 증감/원인/내일예측", level=3)
-    product_insight = _build_product_insight_table(order_df, report_date, compare_date)
-    if product_insight.empty:
-        st.caption("분석 가능한 상품 데이터가 없습니다.")
-    else:
-        insight_cols = [
-            "product_name",
-            "today_order_qty",
-            "today_sold_qty",
-            "today_revenue",
-            "revenue_diff",
-            "revenue_diff_pct",
-            "price_diff_pct",
-            "nextday_forecast_revenue",
-            "change_reason",
-        ]
-        st.caption("기준: 오늘 vs 전주 동일요일, 내일 예측은 최근 7일 평균")
-        show_data_grid(product_insight[insight_cols].head(20), keep_input_order=True)
-    st.markdown("---")
-
-    section_heading("고객 이탈/해피콜 실행판", level=3)
-    happycall_df = _build_happycall_candidates(order_df, report_date)
-    if happycall_df.empty:
-        st.caption("해피콜 대상 계산을 위한 고객 데이터가 없습니다.")
-    else:
-        total_candidates = len(happycall_df)
-        risk_count = int((happycall_df["segment"] == "휴면위험").sum())
-        avg_delay = float(pd.to_numeric(happycall_df["delay_days"], errors="coerce").fillna(0).mean())
-        top_revenue_target = float(
-            pd.to_numeric(happycall_df.head(20)["revenue_lifetime"], errors="coerce").fillna(0).sum()
+    with tab_summary:
+        section_heading("경영 요약 리포트")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric(
+            "순매출",
+            f"{report_summary['total_amount']:,.0f}원",
+            _delta_text(report_summary["total_amount"], compare_summary["total_amount"]),
         )
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("오늘 콜 대상(추천)", f"{total_candidates:,}")
-        c2.metric("휴면위험 고객", f"{risk_count:,}")
-        c3.metric("평균 지연일", f"{avg_delay:.1f}일")
-        c4.metric("우선대상 예상 LTV", f"{top_revenue_target:,.0f}원")
-
-        st.caption("우선순위 점수 기준 상위 고객부터 해피콜 실행")
-        call_cols = [
-            "buyer_id",
-            "buyer_name",
-            "segment",
-            "last_order_date",
-            "expected_next_order_date",
-            "delay_days",
-            "order_count_lifetime",
-            "revenue_lifetime",
-            "priority_score",
-            "recommended_action",
-        ]
-        show_data_grid(happycall_df[call_cols].head(30), keep_input_order=True)
-    st.markdown("---")
-
-    section_heading("가격-매출-마진 방어판", level=3)
-    margin_df = load_option_margin_snapshot(report_date)
-    if margin_df.empty:
+        m2.metric(
+            "주문건수",
+            f"{int(report_summary['order_count']):,}",
+            _delta_text(report_summary["order_count"], compare_summary["order_count"]),
+        )
+        m3.metric(
+            "주문수량",
+            f"{report_summary['order_quantity']:,.0f}",
+            _delta_text(report_summary["order_quantity"], compare_summary["order_quantity"]),
+        )
+        m4.metric(
+            "판매수량",
+            f"{report_summary['sold_quantity']:,.0f}",
+            _delta_text(report_summary["sold_quantity"], compare_summary["sold_quantity"]),
+        )
+        m5.metric(
+            "고객수",
+            f"{int(report_summary['customer_count']):,}",
+            _delta_text(report_summary["customer_count"], compare_summary["customer_count"]),
+        )
         st.caption(
-            "옵션 마진 스냅샷 데이터가 없습니다. "
-            "`create_margin_management_tables.sql` 실행 후 "
-            "`upsert_option_margin_daily.sql` 배치를 먼저 수행해 주세요."
-        )
-    else:
-        threshold_col1, threshold_col2 = st.columns([2, 6])
-        with threshold_col1:
-            margin_threshold_pct = st.number_input(
-                "마진율 임계치(%)",
-                min_value=-100.0,
-                max_value=100.0,
-                value=float(st.session_state.get("margin_threshold_pct", 10.0)),
-                step=0.5,
-                key="margin_threshold_pct",
-            )
-        with threshold_col2:
-            st.caption(
-                "임계치 미만 옵션은 경고 대상으로 분류됩니다. "
-                "쿠폰/할인은 순매출(`net_revenue`)에 이미 반영되어 마진 계산에 포함됩니다."
-            )
-
-        total_revenue = float(pd.to_numeric(margin_df["net_revenue"], errors="coerce").fillna(0).sum())
-        total_cost = float(pd.to_numeric(margin_df["estimated_cost"], errors="coerce").fillna(0).sum())
-        total_margin = float(pd.to_numeric(margin_df["margin_amount"], errors="coerce").fillna(0).sum())
-        margin_rate = (total_margin / total_revenue * 100.0) if total_revenue > 0 else 0.0
-        low_margin_df = margin_df[pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < margin_threshold_pct]
-        critical_margin_df = margin_df[pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < 0]
-
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("총 순매출", f"{total_revenue:,.0f}원")
-        m2.metric("총 추정원가", f"{total_cost:,.0f}원")
-        m3.metric("총 마진액", f"{total_margin:,.0f}원")
-        m4.metric("평균 마진율", f"{margin_rate:.1f}%")
-        m5.metric(f"임계치 미만({margin_threshold_pct:.1f}%↓)", f"{len(low_margin_df):,}개")
-        m6.metric("긴급(마진율<0%)", f"{len(critical_margin_df):,}개")
-
-        if len(critical_margin_df) > 0:
-            st.warning("마진율이 0% 미만인 옵션이 있습니다. 가격/쿠폰/배송비 규칙을 우선 점검하세요.")
-        elif len(low_margin_df) > 0:
-            st.info("임계치 미만 옵션이 있습니다. 옵션 단가/프로모션 조건을 점검하세요.")
-
-        margin_cols = [
-            "product_name",
-            "option_name",
-            "delivery_fee_type",
-            "order_count",
-            "order_quantity",
-            "net_revenue",
-            "estimated_cost",
-            "margin_amount",
-            "margin_rate_pct",
-        ]
-        st.caption("마진율 기준 취약 옵션(하위)과 고마진 옵션(상위)을 함께 점검하세요.")
-        hi_col, lo_col = st.columns(2)
-        with hi_col:
-            st.markdown("#### 고마진 옵션 Top10")
-            hi = margin_df.sort_values("margin_rate_pct", ascending=False).head(10)
-            show_data_grid(hi[margin_cols], keep_input_order=True)
-        with lo_col:
-            st.markdown("#### 저마진 옵션 Top10")
-            lo = margin_df.sort_values("margin_rate_pct", ascending=True).head(10)
-            show_data_grid(lo[margin_cols], keep_input_order=True)
-    st.markdown("---")
-
-    section_heading("KPI")
-    kpi_col1, kpi_col2 = st.columns(2)
-    with kpi_col1:
-        kpi_start_date = st.date_input(
-            "시작",
-            value=default_start,
-            key="kpi_start_date",
-        )
-    with kpi_col2:
-        kpi_end_date = st.date_input(
-            "종료",
-            value=default_end,
-            key="kpi_end_date",
+            f"기준일 {report_date} · 전주 비교일 {compare_date} · "
+            f"내일 예상 매출 {forecast_amount:,.0f}원 (신뢰도 {forecast_conf})"
         )
 
-    if kpi_start_date > kpi_end_date:
-        st.stop()
+        rise_col, fall_col = st.columns(2)
+        with rise_col:
+            st.markdown("#### 전주 대비 상승 상품 Top5")
+            rise_df = product_delta.head(5)[["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]]
+            show_data_grid(rise_df, keep_input_order=True)
+        with fall_col:
+            st.markdown("#### 전주 대비 하락 상품 Top5")
+            fall_df = product_delta.sort_values("revenue_diff").head(5)[
+                ["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]
+            ]
+            show_data_grid(fall_df, keep_input_order=True)
 
-    kpi_mask = (
-        (order_df["date"].dt.date >= kpi_start_date)
-        & (order_df["date"].dt.date <= kpi_end_date)
-    )
-    kpi_filtered_df = order_df[kpi_mask].copy()
-    if kpi_filtered_df.empty:
-        st.stop()
+        action_msgs: list[str] = []
+        if report_summary["total_amount"] < compare_summary["total_amount"]:
+            action_msgs.append("순매출이 전주 대비 하락: 하락 Top 상품 옵션/가격/노출 상태를 우선 점검하세요.")
+        if report_summary["customer_count"] < compare_summary["customer_count"]:
+            action_msgs.append("고객수가 감소: 최근 2주 미주문 고객 리마인드(해피콜/메시지) 캠페인을 진행하세요.")
+        if forecast_amount < report_summary["total_amount"]:
+            action_msgs.append("내일 예상 매출이 오늘보다 낮음: 상위 상품 재구매 유도 번들/쿠폰을 사전 노출하세요.")
+        if not action_msgs:
+            action_msgs.append("주요 지표가 안정적입니다. 상승 상품 재고/배송 품질 유지에 집중하세요.")
+        st.info("오늘 실행 액션: " + " / ".join(action_msgs[:3]))
 
-    period_days = (kpi_end_date - kpi_start_date).days + 1
-    prev_start = kpi_start_date - timedelta(days=7)
-    prev_end = kpi_end_date - timedelta(days=7)
-    prev_mask = (
-        (order_df["date"].dt.date >= prev_start)
-        & (order_df["date"].dt.date <= prev_end)
-    )
-    prev_df = order_df[prev_mask].copy()
-
-    compare_prev = not prev_df.empty
-    whole = kpi_aggregate(kpi_filtered_df)
-    prev_m = kpi_aggregate(prev_df)
-    expected_sales = expected_sales_from_recent_7d(kpi_filtered_df)
-    prev_expected_sales = expected_sales_from_recent_7d(prev_df)
-    expected_settlement_total = float(
-        pd.to_numeric(kpi_filtered_df["expected_settlement_amount"], errors="coerce").fillna(0).sum()
-    )
-    prev_expected_settlement_total = float(
-        pd.to_numeric(prev_df["expected_settlement_amount"], errors="coerce").fillna(0).sum()
-    )
-    settlement_ratio_pct = (
-        (expected_settlement_total / whole["total_amount"]) * 100.0
-        if float(whole["total_amount"]) != 0.0
-        else 0.0
-    )
-    settlement_diff_amount = expected_settlement_total - float(whole["total_amount"])
-
-    def _prev_delta(curr: float, base: float) -> str | None:
-        if not compare_prev:
-            return None
-        return f"{delta_rate(curr, base):.1f}%"
-
-    compare_info = f"vs 1주 전 ({prev_start}~{prev_end})"
-
-    with st.container(border=True):
-        r1a, r1b, r1c, r1d = st.columns(4)
-        r1a.metric(
-            f"순매출 ({compare_info})",
-            f"{whole['total_amount']:,.0f}원",
-            _prev_delta(whole["total_amount"], prev_m["total_amount"]),
-        )
-        r1b.metric(
-            f"상품주문 ({compare_info})",
-            f"{int(whole['order_count']):,}",
-            _prev_delta(whole["order_count"], prev_m["order_count"]),
-        )
-        r1c.metric(
-            f"판매 수량 합계 ({compare_info})",
-            f"{whole['total_quantity']:,.0f}",
-            _prev_delta(whole["total_quantity"], prev_m["total_quantity"]),
-        )
-        r1d.metric(
-            f"고객 수 ({compare_info})",
-            f"{int(whole['customer_count']):,}",
-            _prev_delta(whole["customer_count"], prev_m["customer_count"]),
-        )
-        r2a, r2b, r2c, r2d = st.columns(4)
-        r2a.metric(
-            f"객단가 ({compare_info})",
-            f"{whole['avg_order_value']:,.0f}원",
-            _prev_delta(whole["avg_order_value"], prev_m["avg_order_value"]),
-        )
-        r2b.metric(
-            f"최근7일 평균 일매출 ({compare_info})",
-            f"{expected_sales:,.0f}원",
-            _prev_delta(expected_sales, prev_expected_sales),
-        )
-        r2c.metric(
-            f"정산예정금액 합계 ({compare_info})",
-            f"{expected_settlement_total:,.0f}원",
-            _prev_delta(expected_settlement_total, prev_expected_settlement_total),
-        )
-        r2c.caption(
-            f"순매출 대비 {settlement_ratio_pct:.1f}% · 차액 {settlement_diff_amount:,.0f}원"
-        )
-        r2d.metric(
-            "일수",
-            f"{period_days}일",
-            None,
-        )
-
-    st.markdown("")
-    section_heading("일자별", level=3)
-    kpi_daily_start = default_end - timedelta(days=6)
-    kpi_daily_mask = (
-        (order_df["date"].dt.date >= kpi_daily_start)
-        & (order_df["date"].dt.date <= default_end)
-    )
-    kpi_daily_table = order_df[kpi_daily_mask].copy()
-    kpi_daily_table["date"] = kpi_daily_table["date"].dt.date
-    daily_kpi = _aggregate_kpi_daily(kpi_daily_table)
-    cal = pd.DataFrame(
-        {"date": pd.date_range(kpi_daily_start, default_end, freq="D").date}
-    )
-    daily_kpi = cal.merge(daily_kpi, on="date", how="left")
-    for col in ("total_amount", "total_quantity"):
-        daily_kpi[col] = pd.to_numeric(daily_kpi[col], errors="coerce").fillna(0.0)
-    daily_kpi["order_count"] = daily_kpi["order_count"].fillna(0).astype(int)
-    daily_kpi = add_avg_ticket_to_daily(daily_kpi)
-    daily_kpi["date_label"] = daily_kpi["date"].map(_format_sales_date_label)
-    daily_kpi = daily_kpi.sort_values("date", ascending=False)
-
-    daily_kpi = daily_kpi[
-        [
-            "date_label",
-            "total_amount",
-            "avg_ticket",
-            "order_count",
-            "total_quantity",
-        ]
-    ]
-    daily_kpi = append_daily_total_row(daily_kpi)
-
-    show_data_grid(daily_kpi)
-
-    st.markdown("---")
-    view_mode = st.radio(
-        "화면 보기",
-        options=["요약", "분석"],
-        horizontal=True,
-        key="dashboard_view_mode",
-    )
-    if view_mode == "요약":
-        st.info("분석 표는 상단 화면 보기에서 `분석`을 선택하면 확인할 수 있습니다.")
-        return
-
-    st.markdown("---")
-    section_heading("분석")
-    ana_col1, ana_col2 = st.columns(2)
-    with ana_col1:
-        analysis_start_date = st.date_input(
-            "시작",
-            value=default_start,
-            key="analysis_start_date",
-        )
-    with ana_col2:
-        analysis_end_date = st.date_input(
-            "종료",
-            value=default_end,
-            key="analysis_end_date",
-        )
-    buyer_name_search = st.text_input("구매자", "", key="main_buyer_search")
-
-    if analysis_start_date > analysis_end_date:
-        st.stop()
-
-    analysis_mask = (
-        (order_df["date"].dt.date >= analysis_start_date)
-        & (order_df["date"].dt.date <= analysis_end_date)
-    )
-    analysis_filtered_df = order_df[analysis_mask].copy()
-    if buyer_name_search:
-        analysis_filtered_df = analysis_filtered_df[
-            analysis_filtered_df["buyer_name"].astype(str).str.contains(
-                buyer_name_search, case=False, na=False
-            )
-        ]
-    if analysis_filtered_df.empty:
-        st.stop()
-
-    _rev_col = (
-        "net_revenue" if "net_revenue" in analysis_filtered_df.columns else "amount"
-    )
-
-    tab_product_sales, tab_option_sales = st.tabs(["상품", "옵션"])
-
-    with tab_product_sales:
-        product_summary = _prepare_analysis_summary(
-            analysis_filtered_df,
-            group_key="product_name",
-            revenue_column=_rev_col,
-        )
-        product_summary = _append_analysis_total_row(product_summary, name_col="product_name")
-        product_summary = product_summary[
-            [
+    with tab_product:
+        section_heading("상품 증감/원인/내일예측", level=3)
+        if product_insight.empty:
+            st.caption("분석 가능한 상품 데이터가 없습니다.")
+        else:
+            insight_cols = [
                 "product_name",
-                "order_count",
-                "order_quantity",
-                "total_amount",
-                "sales_share_pct",
-                "sold_quantity",
-                "amount_per_order",
+                "today_order_qty",
+                "today_sold_qty",
+                "today_revenue",
+                "revenue_diff",
+                "revenue_diff_pct",
+                "price_diff_pct",
+                "nextday_forecast_revenue",
+                "change_reason",
             ]
-        ]
-        show_data_grid(product_summary, keep_input_order=True)
+            st.caption("기준: 오늘 vs 전주 동일요일, 내일 예측은 최근 7일 평균")
+            show_data_grid(product_insight[insight_cols].head(20), keep_input_order=True)
 
-    with tab_option_sales:
-        option_name_summary = _prepare_analysis_summary(
-            analysis_filtered_df,
-            group_key="option_name",
-            revenue_column=_rev_col,
-        )
-        option_name_summary = _append_analysis_total_row(option_name_summary, name_col="option_name")
-        option_name_summary = option_name_summary[
-            [
+    with tab_customer:
+        section_heading("고객 이탈/해피콜 실행판", level=3)
+        if happycall_df.empty:
+            st.caption("해피콜 대상 계산을 위한 고객 데이터가 없습니다.")
+        else:
+            total_candidates = len(happycall_df)
+            risk_count = int((happycall_df["segment"] == "휴면위험").sum())
+            avg_delay = float(pd.to_numeric(happycall_df["delay_days"], errors="coerce").fillna(0).mean())
+            top_revenue_target = float(
+                pd.to_numeric(happycall_df.head(20)["revenue_lifetime"], errors="coerce").fillna(0).sum()
+            )
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("오늘 콜 대상(추천)", f"{total_candidates:,}")
+            c2.metric("휴면위험 고객", f"{risk_count:,}")
+            c3.metric("평균 지연일", f"{avg_delay:.1f}일")
+            c4.metric("우선대상 예상 LTV", f"{top_revenue_target:,.0f}원")
+
+            st.caption("우선순위 점수 기준 상위 고객부터 해피콜 실행")
+            call_cols = [
+                "buyer_id",
+                "buyer_name",
+                "segment",
+                "last_order_date",
+                "expected_next_order_date",
+                "delay_days",
+                "order_count_lifetime",
+                "revenue_lifetime",
+                "priority_score",
+                "recommended_action",
+            ]
+            show_data_grid(happycall_df[call_cols].head(30), keep_input_order=True)
+
+    with tab_margin:
+        section_heading("가격-매출-마진 방어판", level=3)
+        if margin_df.empty:
+            st.caption(
+                "옵션 마진 스냅샷 데이터가 없습니다. "
+                "`create_margin_management_tables.sql` 실행 후 "
+                "`upsert_option_margin_daily.sql` 배치를 먼저 수행해 주세요."
+            )
+        else:
+            threshold_col1, threshold_col2 = st.columns([2, 6])
+            with threshold_col1:
+                margin_threshold_pct = st.number_input(
+                    "마진율 임계치(%)",
+                    min_value=-100.0,
+                    max_value=100.0,
+                    value=float(st.session_state.get("margin_threshold_pct", 10.0)),
+                    step=0.5,
+                    key="margin_threshold_pct",
+                )
+            with threshold_col2:
+                st.caption(
+                    "임계치 미만 옵션은 경고 대상으로 분류됩니다. "
+                    "쿠폰/할인은 순매출(`net_revenue`)에 이미 반영되어 마진 계산에 포함됩니다."
+                )
+
+            total_revenue = float(pd.to_numeric(margin_df["net_revenue"], errors="coerce").fillna(0).sum())
+            total_cost = float(pd.to_numeric(margin_df["estimated_cost"], errors="coerce").fillna(0).sum())
+            total_margin = float(pd.to_numeric(margin_df["margin_amount"], errors="coerce").fillna(0).sum())
+            margin_rate = (total_margin / total_revenue * 100.0) if total_revenue > 0 else 0.0
+            low_margin_df = margin_df[
+                pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < margin_threshold_pct
+            ]
+            critical_margin_df = margin_df[
+                pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < 0
+            ]
+
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("총 순매출", f"{total_revenue:,.0f}원")
+            m2.metric("총 추정원가", f"{total_cost:,.0f}원")
+            m3.metric("총 마진액", f"{total_margin:,.0f}원")
+            m4.metric("평균 마진율", f"{margin_rate:.1f}%")
+            m5.metric(f"임계치 미만({margin_threshold_pct:.1f}%↓)", f"{len(low_margin_df):,}개")
+            m6.metric("긴급(마진율<0%)", f"{len(critical_margin_df):,}개")
+
+            if len(critical_margin_df) > 0:
+                st.warning("마진율이 0% 미만인 옵션이 있습니다. 가격/쿠폰/배송비 규칙을 우선 점검하세요.")
+            elif len(low_margin_df) > 0:
+                st.info("임계치 미만 옵션이 있습니다. 옵션 단가/프로모션 조건을 점검하세요.")
+
+            margin_cols = [
+                "product_name",
                 "option_name",
+                "delivery_fee_type",
                 "order_count",
                 "order_quantity",
+                "net_revenue",
+                "estimated_cost",
+                "margin_amount",
+                "margin_rate_pct",
+            ]
+            st.caption("마진율 기준 취약 옵션(하위)과 고마진 옵션(상위)을 함께 점검하세요.")
+            hi_col, lo_col = st.columns(2)
+            with hi_col:
+                st.markdown("#### 고마진 옵션 Top10")
+                hi = margin_df.sort_values("margin_rate_pct", ascending=False).head(10)
+                show_data_grid(hi[margin_cols], keep_input_order=True)
+            with lo_col:
+                st.markdown("#### 저마진 옵션 Top10")
+                lo = margin_df.sort_values("margin_rate_pct", ascending=True).head(10)
+                show_data_grid(lo[margin_cols], keep_input_order=True)
+
+    with tab_kpi:
+        section_heading("KPI")
+        kpi_col1, kpi_col2 = st.columns(2)
+        with kpi_col1:
+            kpi_start_date = st.date_input(
+                "시작",
+                value=default_start,
+                key="kpi_start_date",
+            )
+        with kpi_col2:
+            kpi_end_date = st.date_input(
+                "종료",
+                value=default_end,
+                key="kpi_end_date",
+            )
+
+        if kpi_start_date > kpi_end_date:
+            st.stop()
+
+        kpi_mask = (
+            (order_df["date"].dt.date >= kpi_start_date)
+            & (order_df["date"].dt.date <= kpi_end_date)
+        )
+        kpi_filtered_df = order_df[kpi_mask].copy()
+        if kpi_filtered_df.empty:
+            st.stop()
+
+        period_days = (kpi_end_date - kpi_start_date).days + 1
+        prev_start = kpi_start_date - timedelta(days=7)
+        prev_end = kpi_end_date - timedelta(days=7)
+        prev_mask = (
+            (order_df["date"].dt.date >= prev_start)
+            & (order_df["date"].dt.date <= prev_end)
+        )
+        prev_df = order_df[prev_mask].copy()
+
+        compare_prev = not prev_df.empty
+        whole = kpi_aggregate(kpi_filtered_df)
+        prev_m = kpi_aggregate(prev_df)
+        expected_sales = expected_sales_from_recent_7d(kpi_filtered_df)
+        prev_expected_sales = expected_sales_from_recent_7d(prev_df)
+        expected_settlement_total = float(
+            pd.to_numeric(kpi_filtered_df["expected_settlement_amount"], errors="coerce").fillna(0).sum()
+        )
+        prev_expected_settlement_total = float(
+            pd.to_numeric(prev_df["expected_settlement_amount"], errors="coerce").fillna(0).sum()
+        )
+        settlement_ratio_pct = (
+            (expected_settlement_total / whole["total_amount"]) * 100.0
+            if float(whole["total_amount"]) != 0.0
+            else 0.0
+        )
+        settlement_diff_amount = expected_settlement_total - float(whole["total_amount"])
+
+        def _prev_delta(curr: float, base: float) -> str | None:
+            if not compare_prev:
+                return None
+            return f"{delta_rate(curr, base):.1f}%"
+
+        compare_info = f"vs 1주 전 ({prev_start}~{prev_end})"
+
+        with st.container(border=True):
+            r1a, r1b, r1c, r1d = st.columns(4)
+            r1a.metric(
+                f"순매출 ({compare_info})",
+                f"{whole['total_amount']:,.0f}원",
+                _prev_delta(whole["total_amount"], prev_m["total_amount"]),
+            )
+            r1b.metric(
+                f"상품주문 ({compare_info})",
+                f"{int(whole['order_count']):,}",
+                _prev_delta(whole["order_count"], prev_m["order_count"]),
+            )
+            r1c.metric(
+                f"판매 수량 합계 ({compare_info})",
+                f"{whole['total_quantity']:,.0f}",
+                _prev_delta(whole["total_quantity"], prev_m["total_quantity"]),
+            )
+            r1d.metric(
+                f"고객 수 ({compare_info})",
+                f"{int(whole['customer_count']):,}",
+                _prev_delta(whole["customer_count"], prev_m["customer_count"]),
+            )
+            r2a, r2b, r2c, r2d = st.columns(4)
+            r2a.metric(
+                f"객단가 ({compare_info})",
+                f"{whole['avg_order_value']:,.0f}원",
+                _prev_delta(whole["avg_order_value"], prev_m["avg_order_value"]),
+            )
+            r2b.metric(
+                f"최근7일 평균 일매출 ({compare_info})",
+                f"{expected_sales:,.0f}원",
+                _prev_delta(expected_sales, prev_expected_sales),
+            )
+            r2c.metric(
+                f"정산예정금액 합계 ({compare_info})",
+                f"{expected_settlement_total:,.0f}원",
+                _prev_delta(expected_settlement_total, prev_expected_settlement_total),
+            )
+            r2c.caption(
+                f"순매출 대비 {settlement_ratio_pct:.1f}% · 차액 {settlement_diff_amount:,.0f}원"
+            )
+            r2d.metric(
+                "일수",
+                f"{period_days}일",
+                None,
+            )
+
+        st.markdown("")
+        section_heading("일자별", level=3)
+        kpi_daily_start = default_end - timedelta(days=6)
+        kpi_daily_mask = (
+            (order_df["date"].dt.date >= kpi_daily_start)
+            & (order_df["date"].dt.date <= default_end)
+        )
+        kpi_daily_table = order_df[kpi_daily_mask].copy()
+        kpi_daily_table["date"] = kpi_daily_table["date"].dt.date
+        daily_kpi = _aggregate_kpi_daily(kpi_daily_table)
+        cal = pd.DataFrame(
+            {"date": pd.date_range(kpi_daily_start, default_end, freq="D").date}
+        )
+        daily_kpi = cal.merge(daily_kpi, on="date", how="left")
+        for col in ("total_amount", "total_quantity"):
+            daily_kpi[col] = pd.to_numeric(daily_kpi[col], errors="coerce").fillna(0.0)
+        daily_kpi["order_count"] = daily_kpi["order_count"].fillna(0).astype(int)
+        daily_kpi = add_avg_ticket_to_daily(daily_kpi)
+        daily_kpi["date_label"] = daily_kpi["date"].map(_format_sales_date_label)
+        daily_kpi = daily_kpi.sort_values("date", ascending=False)
+
+        daily_kpi = daily_kpi[
+            [
+                "date_label",
                 "total_amount",
-                "sales_share_pct",
-                "sold_quantity",
-                "amount_per_order",
+                "avg_ticket",
+                "order_count",
+                "total_quantity",
             ]
         ]
-        show_data_grid(option_name_summary, keep_input_order=True)
+        daily_kpi = append_daily_total_row(daily_kpi)
+        show_data_grid(daily_kpi)
 
-    with st.expander("상세 주문 원장 보기", expanded=False):
-        detail_ledger, guidance_text = _prepare_detail_ledger_for_display(analysis_filtered_df)
-        if guidance_text:
-            st.caption(f"참조 · 매출집계일 안내: {guidance_text}")
-        show_data_grid(detail_ledger)
+    with tab_detail:
+        section_heading("분석상세")
+        ana_col1, ana_col2 = st.columns(2)
+        with ana_col1:
+            analysis_start_date = st.date_input(
+                "시작",
+                value=default_start,
+                key="analysis_start_date",
+            )
+        with ana_col2:
+            analysis_end_date = st.date_input(
+                "종료",
+                value=default_end,
+                key="analysis_end_date",
+            )
+        buyer_name_search = st.text_input("구매자", "", key="main_buyer_search")
+
+        if analysis_start_date > analysis_end_date:
+            st.stop()
+
+        analysis_mask = (
+            (order_df["date"].dt.date >= analysis_start_date)
+            & (order_df["date"].dt.date <= analysis_end_date)
+        )
+        analysis_filtered_df = order_df[analysis_mask].copy()
+        if buyer_name_search:
+            analysis_filtered_df = analysis_filtered_df[
+                analysis_filtered_df["buyer_name"].astype(str).str.contains(
+                    buyer_name_search, case=False, na=False
+                )
+            ]
+        if analysis_filtered_df.empty:
+            st.stop()
+
+        _rev_col = (
+            "net_revenue" if "net_revenue" in analysis_filtered_df.columns else "amount"
+        )
+
+        tab_product_sales, tab_option_sales = st.tabs(["상품", "옵션"])
+
+        with tab_product_sales:
+            product_summary = _prepare_analysis_summary(
+                analysis_filtered_df,
+                group_key="product_name",
+                revenue_column=_rev_col,
+            )
+            product_summary = _append_analysis_total_row(product_summary, name_col="product_name")
+            product_summary = product_summary[
+                [
+                    "product_name",
+                    "order_count",
+                    "order_quantity",
+                    "total_amount",
+                    "sales_share_pct",
+                    "sold_quantity",
+                    "amount_per_order",
+                ]
+            ]
+            show_data_grid(product_summary, keep_input_order=True)
+
+        with tab_option_sales:
+            option_name_summary = _prepare_analysis_summary(
+                analysis_filtered_df,
+                group_key="option_name",
+                revenue_column=_rev_col,
+            )
+            option_name_summary = _append_analysis_total_row(option_name_summary, name_col="option_name")
+            option_name_summary = option_name_summary[
+                [
+                    "option_name",
+                    "order_count",
+                    "order_quantity",
+                    "total_amount",
+                    "sales_share_pct",
+                    "sold_quantity",
+                    "amount_per_order",
+                ]
+            ]
+            show_data_grid(option_name_summary, keep_input_order=True)
+
+        with st.expander("상세 주문 원장 보기", expanded=False):
+            detail_ledger, guidance_text = _prepare_detail_ledger_for_display(analysis_filtered_df)
+            if guidance_text:
+                st.caption(f"참조 · 매출집계일 안내: {guidance_text}")
+            show_data_grid(detail_ledger)
 
 
 if _require_login():
