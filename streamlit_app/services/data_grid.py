@@ -145,17 +145,26 @@ def _make_unique_column_headers(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def show_summary_table(data: pd.DataFrame | list | dict) -> None:
-    show_data_grid(data)
+def show_summary_table(
+    data: pd.DataFrame | list | dict,
+    *,
+    keep_input_order: bool = False,
+) -> None:
+    show_data_grid(data, keep_input_order=keep_input_order)
 
 
-def show_data_grid(data: pd.DataFrame | list | dict) -> None:
+def show_data_grid(
+    data: pd.DataFrame | list | dict,
+    *,
+    keep_input_order: bool = False,
+) -> None:
     _inject_full_width_dataframe_css_once()
     df_src = _ensure_dataframe(data)
     df = df_src.copy()
     df.columns = [_to_display_column_name(col) for col in df.columns]
     df = _make_unique_column_headers(df)
-    df = _order_display_columns(df)
+    if not keep_input_order:
+        df = _order_display_columns(df)
     df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
     display_obj = _prepare_dataframe_for_display(df)

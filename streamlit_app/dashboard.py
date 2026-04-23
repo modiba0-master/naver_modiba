@@ -707,7 +707,7 @@ def main_content() -> None:
                 "amount_per_order",
             ]
         ]
-        show_data_grid(product_summary)
+        show_data_grid(product_summary, keep_input_order=True)
 
     with tab_option_sales:
         option_name_summary = _prepare_analysis_summary(
@@ -725,7 +725,7 @@ def main_content() -> None:
                 "amount_per_order",
             ]
         ]
-        show_data_grid(option_name_summary)
+        show_data_grid(option_name_summary, keep_input_order=True)
 
     with st.expander("상세 주문 원장 보기", expanded=False):
         detail_ledger, guidance_text = _prepare_detail_ledger_for_display(analysis_filtered_df)
