@@ -116,3 +116,16 @@
   - `2703853` resilience + UI simplification
   - `d5fc66e` autorefresh component guard
   - `45d45b6` title/KPI/analysis column order update
+
+## 2026-04-23 Top Tab Navigation 적용
+
+- 대시보드 레이아웃을 상단 탭 방식으로 재구성:
+  - `KPI`, `요약`, `고객`, `상품`, `마진`, `분석상세`
+- 기존 계산/집계 기능은 유지하고, 보이는 구조만 탭 기준으로 재배치.
+- 기존 `화면 보기(요약/분석)` 라디오 분기 제거, 분석 기능은 `분석상세` 탭으로 통합.
+- 검증:
+  - `python -m py_compile "streamlit_app/dashboard.py"` 통과
+  - linter 오류 없음
+- Git/배포:
+  - 커밋 `4fc0343` 푸시 완료
+  - Railway 배포 `6eba7a2f-c6cc-49e1-84f7-2704397fb4cc` 상태 `SUCCESS`
