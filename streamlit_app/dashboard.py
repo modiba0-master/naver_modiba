@@ -964,16 +964,41 @@ def main_content() -> None:
             "`upsert_option_margin_daily.sql` 배치를 먼저 수행해 주세요."
         )
     else:
+        threshold_col1, threshold_col2 = st.columns([2, 6])
+        with threshold_col1:
+            margin_threshold_pct = st.number_input(
+                "마진율 임계치(%)",
+                min_value=-100.0,
+                max_value=100.0,
+                value=float(st.session_state.get("margin_threshold_pct", 10.0)),
+                step=0.5,
+                key="margin_threshold_pct",
+            )
+        with threshold_col2:
+            st.caption(
+                "임계치 미만 옵션은 경고 대상으로 분류됩니다. "
+                "쿠폰/할인은 순매출(`net_revenue`)에 이미 반영되어 마진 계산에 포함됩니다."
+            )
+
         total_revenue = float(pd.to_numeric(margin_df["net_revenue"], errors="coerce").fillna(0).sum())
         total_cost = float(pd.to_numeric(margin_df["estimated_cost"], errors="coerce").fillna(0).sum())
         total_margin = float(pd.to_numeric(margin_df["margin_amount"], errors="coerce").fillna(0).sum())
         margin_rate = (total_margin / total_revenue * 100.0) if total_revenue > 0 else 0.0
+        low_margin_df = margin_df[pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < margin_threshold_pct]
+        critical_margin_df = margin_df[pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < 0]
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("총 순매출", f"{total_revenue:,.0f}원")
         m2.metric("총 추정원가", f"{total_cost:,.0f}원")
         m3.metric("총 마진액", f"{total_margin:,.0f}원")
         m4.metric("평균 마진율", f"{margin_rate:.1f}%")
+        m5.metric(f"임계치 미만({margin_threshold_pct:.1f}%↓)", f"{len(low_margin_df):,}개")
+        m6.metric("긴급(마진율<0%)", f"{len(critical_margin_df):,}개")
+
+        if len(critical_margin_df) > 0:
+            st.warning("마진율이 0% 미만인 옵션이 있습니다. 가격/쿠폰/배송비 규칙을 우선 점검하세요.")
+        elif len(low_margin_df) > 0:
+            st.info("임계치 미만 옵션이 있습니다. 옵션 단가/프로모션 조건을 점검하세요.")
 
         margin_cols = [
             "product_name",

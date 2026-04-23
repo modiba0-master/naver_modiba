@@ -59,7 +59,7 @@
 ## Daily Pipeline
 
 1. `orders`에서 대상 기간 주문 로드
-2. `product_option_cost_master` 기간 매칭
+2. `product_option_cost_master` 기간 매칭 (원가는 `effective_from/effective_to`로 일 단위 이력 관리)
 3. `shipping_margin_rule` 기간/배송유형 매칭
 4. 옵션 단위 비용/마진 계산
 5. `agg_option_margin_daily` UPSERT
@@ -138,4 +138,20 @@
 - 비용이 과도하게 0으로 들어간 옵션은 없는가?
 - 무료배송/유료배송 rule 적용 결과가 정책과 일치하는가?
 - 마진 음수 옵션이 실제 프로모션/정책 결과인지 데이터 오류인지 확인했는가?
+
+---
+
+## Daily Cost Update Rule
+
+- 원가 변경이 발생한 날은 `upsert_option_cost_effective_date.sql`로 신규 기간행을 추가한다.
+- 이전 활성 행은 자동으로 `effective_to = (신규일 - 1일)`로 닫는다.
+- 이렇게 하면 과거 날짜 재집계 시 당시 원가를 정확히 재현할 수 있다.
+
+## Margin Threshold Operation
+
+- 대시보드의 `마진율 임계치(%)` 입력값으로 경고 대상을 즉시 분류한다.
+- 운영 권장값 예시:
+  - 10% 미만: 경고
+  - 0% 미만: 긴급
+- 쿠폰/할인 영향은 `net_revenue`에 반영되므로, 임계치 판단에 자동 포함된다.
 
