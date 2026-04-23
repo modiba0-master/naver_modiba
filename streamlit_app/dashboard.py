@@ -674,6 +674,42 @@ def _build_happycall_candidates(frame: pd.DataFrame, report_date: date) -> pd.Da
     return out
 
 
+@st.cache_data(ttl=300)
+def load_option_margin_snapshot(target_date: date) -> pd.DataFrame:
+    """옵션별 마진 스냅샷 로드 (테이블 미생성 시 빈 결과)."""
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                """
+                SELECT
+                    stat_date,
+                    product_name,
+                    option_name,
+                    delivery_fee_type,
+                    order_count,
+                    order_quantity,
+                    net_revenue,
+                    expected_settlement_amount,
+                    customer_paid_shipping,
+                    seller_shipping_burden,
+                    estimated_cost,
+                    margin_amount,
+                    margin_rate_pct
+                FROM agg_option_margin_daily
+                WHERE stat_date = :d
+                ORDER BY margin_amount DESC
+                """
+            ),
+            {"d": target_date},
+        ).mappings().all()
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        db.close()
+
+
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
 
 
@@ -917,6 +953,49 @@ def main_content() -> None:
             "recommended_action",
         ]
         show_data_grid(happycall_df[call_cols].head(30), keep_input_order=True)
+    st.markdown("---")
+
+    section_heading("가격-매출-마진 방어판", level=3)
+    margin_df = load_option_margin_snapshot(report_date)
+    if margin_df.empty:
+        st.caption(
+            "옵션 마진 스냅샷 데이터가 없습니다. "
+            "`create_margin_management_tables.sql` 실행 후 "
+            "`upsert_option_margin_daily.sql` 배치를 먼저 수행해 주세요."
+        )
+    else:
+        total_revenue = float(pd.to_numeric(margin_df["net_revenue"], errors="coerce").fillna(0).sum())
+        total_cost = float(pd.to_numeric(margin_df["estimated_cost"], errors="coerce").fillna(0).sum())
+        total_margin = float(pd.to_numeric(margin_df["margin_amount"], errors="coerce").fillna(0).sum())
+        margin_rate = (total_margin / total_revenue * 100.0) if total_revenue > 0 else 0.0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("총 순매출", f"{total_revenue:,.0f}원")
+        m2.metric("총 추정원가", f"{total_cost:,.0f}원")
+        m3.metric("총 마진액", f"{total_margin:,.0f}원")
+        m4.metric("평균 마진율", f"{margin_rate:.1f}%")
+
+        margin_cols = [
+            "product_name",
+            "option_name",
+            "delivery_fee_type",
+            "order_count",
+            "order_quantity",
+            "net_revenue",
+            "estimated_cost",
+            "margin_amount",
+            "margin_rate_pct",
+        ]
+        st.caption("마진율 기준 취약 옵션(하위)과 고마진 옵션(상위)을 함께 점검하세요.")
+        hi_col, lo_col = st.columns(2)
+        with hi_col:
+            st.markdown("#### 고마진 옵션 Top10")
+            hi = margin_df.sort_values("margin_rate_pct", ascending=False).head(10)
+            show_data_grid(hi[margin_cols], keep_input_order=True)
+        with lo_col:
+            st.markdown("#### 저마진 옵션 Top10")
+            lo = margin_df.sort_values("margin_rate_pct", ascending=True).head(10)
+            show_data_grid(lo[margin_cols], keep_input_order=True)
     st.markdown("---")
 
     section_heading("KPI")
