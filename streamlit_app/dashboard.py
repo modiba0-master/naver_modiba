@@ -509,6 +509,85 @@ def _simple_nextday_forecast(frame: pd.DataFrame, report_date: date) -> tuple[fl
     return forecast, confidence
 
 
+def _build_product_insight_table(
+    frame: pd.DataFrame,
+    report_date: date,
+    compare_date: date,
+) -> pd.DataFrame:
+    """상품별 증감, 원인 추정, 내일 예측치를 생성한다."""
+    amount_col = "net_revenue" if "net_revenue" in frame.columns else "amount"
+    df = frame.copy()
+    df["_biz_date"] = df["date"].dt.date
+
+    curr = (
+        df[df["_biz_date"] == report_date]
+        .groupby("product_name", as_index=False)
+        .agg(
+            today_revenue=(amount_col, "sum"),
+            today_order_qty=("quantity", "sum"),
+            today_sold_qty=("real_quantity", "sum"),
+            today_order_count=("order_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
+            today_customer_count=("buyer_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
+        )
+    )
+    prev = (
+        df[df["_biz_date"] == compare_date]
+        .groupby("product_name", as_index=False)
+        .agg(
+            prev_revenue=(amount_col, "sum"),
+            prev_order_qty=("quantity", "sum"),
+            prev_order_count=("order_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
+            prev_customer_count=("buyer_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
+        )
+    )
+    merged = curr.merge(prev, on="product_name", how="outer").fillna(0.0)
+    if merged.empty:
+        return merged
+
+    merged["today_avg_price"] = merged["today_revenue"] / merged["today_order_qty"].replace(0, pd.NA)
+    merged["prev_avg_price"] = merged["prev_revenue"] / merged["prev_order_qty"].replace(0, pd.NA)
+    merged["today_avg_price"] = merged["today_avg_price"].fillna(0.0)
+    merged["prev_avg_price"] = merged["prev_avg_price"].fillna(0.0)
+
+    merged["revenue_diff"] = merged["today_revenue"] - merged["prev_revenue"]
+    merged["revenue_diff_pct"] = merged.apply(
+        lambda r: ((r["revenue_diff"] / r["prev_revenue"]) * 100.0) if r["prev_revenue"] > 0 else 0.0,
+        axis=1,
+    )
+    merged["price_diff_pct"] = merged.apply(
+        lambda r: ((r["today_avg_price"] - r["prev_avg_price"]) / r["prev_avg_price"] * 100.0)
+        if r["prev_avg_price"] > 0
+        else 0.0,
+        axis=1,
+    )
+
+    recent_base = df[df["_biz_date"].between(report_date - timedelta(days=6), report_date)]
+    next_forecast = (
+        recent_base.groupby("product_name", as_index=False)
+        .agg(nextday_forecast_revenue=(amount_col, "mean"))
+    )
+    merged = merged.merge(next_forecast, on="product_name", how="left")
+    merged["nextday_forecast_revenue"] = merged["nextday_forecast_revenue"].fillna(0.0)
+
+    def _reason(row: pd.Series) -> str:
+        reasons: list[str] = []
+        if abs(float(row["price_diff_pct"])) >= 5.0:
+            direction = "상승" if float(row["price_diff_pct"]) > 0 else "하락"
+            reasons.append(f"평균 판매가 {direction}")
+        qty_diff = float(row["today_order_qty"]) - float(row["prev_order_qty"])
+        if abs(qty_diff) >= 3:
+            reasons.append("주문수량 변화")
+        cust_diff = float(row["today_customer_count"]) - float(row["prev_customer_count"])
+        if abs(cust_diff) >= 2:
+            reasons.append("고객 유입/재구매 변화")
+        if not reasons:
+            reasons.append("기본 변동 범위")
+        return " + ".join(reasons[:2])
+
+    merged["change_reason"] = merged.apply(_reason, axis=1)
+    return merged.sort_values("revenue_diff", ascending=False)
+
+
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
 
 
@@ -698,6 +777,26 @@ def main_content() -> None:
     if not action_msgs:
         action_msgs.append("주요 지표가 안정적입니다. 상승 상품 재고/배송 품질 유지에 집중하세요.")
     st.info("오늘 실행 액션: " + " / ".join(action_msgs[:3]))
+    st.markdown("---")
+
+    section_heading("상품 증감/원인/내일예측", level=3)
+    product_insight = _build_product_insight_table(order_df, report_date, compare_date)
+    if product_insight.empty:
+        st.caption("분석 가능한 상품 데이터가 없습니다.")
+    else:
+        insight_cols = [
+            "product_name",
+            "today_order_qty",
+            "today_sold_qty",
+            "today_revenue",
+            "revenue_diff",
+            "revenue_diff_pct",
+            "price_diff_pct",
+            "nextday_forecast_revenue",
+            "change_reason",
+        ]
+        st.caption("기준: 오늘 vs 전주 동일요일, 내일 예측은 최근 7일 평균")
+        show_data_grid(product_insight[insight_cols].head(20), keep_input_order=True)
     st.markdown("---")
 
     section_heading("KPI")
