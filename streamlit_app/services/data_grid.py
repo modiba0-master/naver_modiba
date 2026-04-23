@@ -93,21 +93,6 @@ def _to_display_column_name(col: object) -> str:
     return COLUMN_MAP.get(original, COLUMN_MAP.get(_normalize_key_for_mapping(original), original))
 
 
-def _get_ui_theme_modern() -> bool:
-    """다크 UI 모드 여부(실패 시 False — 표는 기본 밝은 스타일)."""
-    try:
-        from ui_theme import UI_MODE_MODERN, get_ui_mode
-    except ImportError:
-        try:
-            from streamlit_app.ui_theme import UI_MODE_MODERN, get_ui_mode
-        except ImportError:
-            return False
-    try:
-        return get_ui_mode() == UI_MODE_MODERN
-    except Exception:
-        return False
-
-
 def _modiba_dark_styler(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
     """Streamlit Glide 표가 앱 테마보다 밝게 남는 경우 대비 — Styler로 셀·헤더 톤 통일."""
     cell_bg = "#141a23"
@@ -142,7 +127,7 @@ def _modiba_dark_styler(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
 def _prepare_dataframe_for_display(
     frame: pd.DataFrame,
 ) -> pd.DataFrame | pd.io.formats.style.Styler:
-    if frame.empty or not _get_ui_theme_modern():
+    if frame.empty:
         return frame
     return _modiba_dark_styler(frame)
 

@@ -32,11 +32,8 @@ from services.kpi_from_filtered import (
 )
 from services.kpi_ui import add_avg_ticket_to_daily, append_daily_total_row
 from ui_theme import (
-    UI_MODE_MODERN,
     apply_dashboard_theme,
-    get_ui_mode,
     render_page_title,
-    render_ui_rollback_control,
     section_heading,
 )
 
@@ -378,7 +375,6 @@ def main_content() -> None:
     _safe_autorefresh(interval_ms=60000, key="naver_modiba_dashboard_autorefresh")
 
     apply_dashboard_theme()
-    render_ui_rollback_control()
 
     api_base_url = DEFAULT_API_BASE_URL
     revenue_basis = "payment"
@@ -397,14 +393,10 @@ def main_content() -> None:
         _mark_api_failure(exc)
         db_subtitle = "DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다."
 
-    if get_ui_mode() == UI_MODE_MODERN:
-        render_page_title(
-            "네이버 친절한 모디바 주문현황",
-            subtitle=db_subtitle,
-        )
-    else:
-        st.title("네이버 친절한 모디바 주문현황")
-        st.write(db_subtitle)
+    render_page_title(
+        "네이버 친절한 모디바 주문현황",
+        subtitle=db_subtitle,
+    )
     _render_api_health_caption()
 
     data_loaded_at = ""

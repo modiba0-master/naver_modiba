@@ -1,12 +1,4 @@
-"""대시보드 UI 테마(다크 모드) 및 클래식(이전 화면) 롤백.
-
-완전 제거 절차(신규 UI에 확정 후 롤백 코드를 없앨 때)
---------------------------------------------------------
-1. 이 파일 `streamlit_app/ui_theme.py` 을 삭제한다.
-2. `streamlit_app/dashboard.py` 에서 본 모듈 import 및
-   `apply_dashboard_theme`, `render_ui_rollback_control` 호출을 제거한다.
-3. `render_page_title` 사용을 기존 `st.title(...)` 한 줄로 되돌린다(또는 제목만 유지).
-"""
+"""대시보드 다크 UI 테마 유틸."""
 
 from __future__ import annotations
 
@@ -14,72 +6,30 @@ import html
 
 import streamlit as st
 
-UI_MODE_MODERN = "modern"
-UI_MODE_CLASSIC = "classic"
-SESSION_UI_MODE_KEY = "_modiba_ui_display_mode"
 
-
-def get_ui_mode() -> str:
-    st.session_state.setdefault(SESSION_UI_MODE_KEY, UI_MODE_MODERN)
-    mode = st.session_state.get(SESSION_UI_MODE_KEY, UI_MODE_MODERN)
-    return mode if mode in (UI_MODE_MODERN, UI_MODE_CLASSIC) else UI_MODE_MODERN
-
-
-def apply_dashboard_theme(mode: str | None = None) -> None:
-    """현재 세션 모드에 맞춰 전역 스타일을 주입한다. 클래식은 Streamlit 기본에 가깝게 둔다."""
-    m = mode or get_ui_mode()
-    if m == UI_MODE_CLASSIC:
-        return
+def apply_dashboard_theme() -> None:
+    """대시보드 다크 테마를 전역 적용한다."""
     st.markdown(_dark_theme_css(), unsafe_allow_html=True)
 
 
-def render_ui_rollback_control() -> None:
-    """이전 UI로 되돌릴 수 있는 안전장치(익스팬더 + 라디오)."""
-    get_ui_mode()  # ensure default session key exists
-    with st.expander("UI 안전장치 — 이전 화면(클래식)으로 복원", expanded=False):
-        st.caption(
-            "신규 다크 UI가 불편하면 여기서 즉시 이전 스타일로 전환할 수 있습니다. "
-            "확정 후 롤백 코드를 없애려면 이 파일 상단 docstring의 제거 절차를 따르세요."
-        )
-        st.radio(
-            "표시 모드",
-            options=[UI_MODE_MODERN, UI_MODE_CLASSIC],
-            format_func=lambda x: (
-                "신규 다크 UI (권장)" if x == UI_MODE_MODERN else "이전 화면 (클래식 · 롤백)"
-            ),
-            key=SESSION_UI_MODE_KEY,
-            horizontal=True,
-        )
-
-
 def render_page_title(text: str, *, subtitle: str | None = None) -> None:
-    """모드에 따라 제목 영역을 다르게 렌더한다."""
-    if get_ui_mode() == UI_MODE_MODERN:
-        sub = ""
-        if subtitle:
-            safe = html.escape(subtitle)
-            sub = f'<p class="modiba-hero-sub">{safe}</p>'
-        st.markdown(
-            f'<div class="modiba-hero-wrap"><h1 class="modiba-hero-title">{text}</h1>{sub}</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.title(text)
-        if subtitle:
-            st.caption(subtitle)
+    """다크 테마용 히어로 제목 영역."""
+    sub = ""
+    if subtitle:
+        safe = html.escape(subtitle)
+        sub = f'<p class="modiba-hero-sub">{safe}</p>'
+    st.markdown(
+        f'<div class="modiba-hero-wrap"><h1 class="modiba-hero-title">{text}</h1>{sub}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def section_heading(text: str, level: int = 2) -> None:
+    """다크 테마용 섹션 헤더."""
     tag = "h2" if level == 2 else "h3"
-    if get_ui_mode() == UI_MODE_MODERN:
-        cls = "modiba-section-h2" if level == 2 else "modiba-section-h3"
-        safe = html.escape(text)
-        st.markdown(f'<{tag} class="{cls}">{safe}</{tag}>', unsafe_allow_html=True)
-    else:
-        if level == 2:
-            st.markdown(f"## {text}")
-        else:
-            st.markdown(f"### {text}")
+    cls = "modiba-section-h2" if level == 2 else "modiba-section-h3"
+    safe = html.escape(text)
+    st.markdown(f'<{tag} class="{cls}">{safe}</{tag}>', unsafe_allow_html=True)
 
 
 def _dark_theme_css() -> str:
