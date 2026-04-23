@@ -257,6 +257,7 @@ def _normalize_api_columns(frame: pd.DataFrame) -> pd.DataFrame:
         "orderer_id": "buyer_id",
         "shipping_address": "address",
         "receiver_address": "address",
+        "expectedsettlementamount": "expected_settlement_amount",
     }
     for src, dst in alias_map.items():
         if src in df.columns and dst not in df.columns:
@@ -335,6 +336,11 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+    if "expected_settlement_amount" not in df.columns:
+        df["expected_settlement_amount"] = 0
+    df["expected_settlement_amount"] = pd.to_numeric(
+        df["expected_settlement_amount"], errors="coerce"
+    ).fillna(0)
     if "net_revenue" not in df.columns:
         df["net_revenue"] = df["amount"]
     else:
@@ -598,6 +604,12 @@ def main_content() -> None:
     prev_m = kpi_aggregate(prev_df)
     expected_sales = expected_sales_from_recent_7d(kpi_filtered_df)
     prev_expected_sales = expected_sales_from_recent_7d(prev_df)
+    expected_settlement_total = float(
+        pd.to_numeric(kpi_filtered_df["expected_settlement_amount"], errors="coerce").fillna(0).sum()
+    )
+    prev_expected_settlement_total = float(
+        pd.to_numeric(prev_df["expected_settlement_amount"], errors="coerce").fillna(0).sum()
+    )
 
     def _prev_delta(curr: float, base: float) -> str | None:
         if not compare_prev:
@@ -628,7 +640,7 @@ def main_content() -> None:
             f"{int(whole['customer_count']):,}",
             _prev_delta(whole["customer_count"], prev_m["customer_count"]),
         )
-        r2a, r2b, r2c = st.columns(3)
+        r2a, r2b, r2c, r2d = st.columns(4)
         r2a.metric(
             f"객단가 ({compare_info})",
             f"{whole['avg_order_value']:,.0f}원",
@@ -640,6 +652,11 @@ def main_content() -> None:
             _prev_delta(expected_sales, prev_expected_sales),
         )
         r2c.metric(
+            f"정산예정금액 합계 ({compare_info})",
+            f"{expected_settlement_total:,.0f}원",
+            _prev_delta(expected_settlement_total, prev_expected_settlement_total),
+        )
+        r2d.metric(
             "일수",
             f"{period_days}일",
             None,

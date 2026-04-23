@@ -75,6 +75,7 @@ class OrderRawItem(BaseModel):
     option_name: str
     quantity: int
     amount: int
+    expected_settlement_amount: int = 0
     refund_amount: int = 0
     cancel_amount: int = 0
     net_revenue: int = 0

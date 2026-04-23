@@ -167,6 +167,7 @@ def get_orders_raw(
         item["option_name"] = row.option_name
         item["quantity"] = row.quantity
         item["amount"] = row.amount
+        item["expected_settlement_amount"] = row.expected_settlement_amount or 0
         item["refund_amount"] = row.refund_amount
         item["cancel_amount"] = row.cancel_amount
         item["net_revenue"] = row.net_revenue
@@ -227,6 +228,7 @@ def get_claim_orders_raw(
             "option_name": row.option_name,
             "quantity": row.quantity,
             "amount": row.amount,
+            "expected_settlement_amount": row.expected_settlement_amount or 0,
             "refund_amount": row.refund_amount,
             "cancel_amount": row.cancel_amount,
             "net_revenue": row.net_revenue,
