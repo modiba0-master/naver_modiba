@@ -371,7 +371,7 @@ def _prepare_analysis_summary(
         frame.groupby(group_key, as_index=False)
         .agg(
             total_amount=(revenue_column, "sum"),
-            quantity=("quantity", "sum"),
+            order_quantity=("quantity", "sum"),
             sold_quantity=("real_quantity", "sum"),
             order_count=(
                 "order_id",
@@ -401,6 +401,9 @@ def _append_analysis_total_row(
     body = summary_df.copy()
     total_amount = float(pd.to_numeric(body["total_amount"], errors="coerce").fillna(0).sum())
     total_orders = int(pd.to_numeric(body["order_count"], errors="coerce").fillna(0).sum())
+    total_order_quantity = float(
+        pd.to_numeric(body["order_quantity"], errors="coerce").fillna(0).sum()
+    )
     total_sold = float(pd.to_numeric(body["sold_quantity"], errors="coerce").fillna(0).sum())
     avg_amount_per_order = (total_amount / total_orders) if total_orders > 0 else 0.0
     total_row = pd.DataFrame(
@@ -408,6 +411,7 @@ def _append_analysis_total_row(
             {
                 name_col: "합계",
                 "order_count": total_orders,
+                "order_quantity": total_order_quantity,
                 "total_amount": total_amount,
                 "sales_share_pct": 100.0 if total_amount > 0 else 0.0,
                 "sold_quantity": total_sold,
@@ -610,6 +614,12 @@ def main_content() -> None:
     prev_expected_settlement_total = float(
         pd.to_numeric(prev_df["expected_settlement_amount"], errors="coerce").fillna(0).sum()
     )
+    settlement_ratio_pct = (
+        (expected_settlement_total / whole["total_amount"]) * 100.0
+        if float(whole["total_amount"]) != 0.0
+        else 0.0
+    )
+    settlement_diff_amount = expected_settlement_total - float(whole["total_amount"])
 
     def _prev_delta(curr: float, base: float) -> str | None:
         if not compare_prev:
@@ -655,6 +665,9 @@ def main_content() -> None:
             f"정산예정금액 합계 ({compare_info})",
             f"{expected_settlement_total:,.0f}원",
             _prev_delta(expected_settlement_total, prev_expected_settlement_total),
+        )
+        r2c.caption(
+            f"순매출 대비 {settlement_ratio_pct:.1f}% · 차액 {settlement_diff_amount:,.0f}원"
         )
         r2d.metric(
             "일수",
@@ -758,6 +771,7 @@ def main_content() -> None:
             [
                 "product_name",
                 "order_count",
+                "order_quantity",
                 "total_amount",
                 "sales_share_pct",
                 "sold_quantity",
@@ -777,6 +791,7 @@ def main_content() -> None:
             [
                 "option_name",
                 "order_count",
+                "order_quantity",
                 "total_amount",
                 "sales_share_pct",
                 "sold_quantity",

@@ -43,6 +43,7 @@ COLUMN_MAP: dict[str, str] = {
     "shipping_business_date": "발송 기준 영업일",
     "revenue": "매출",
     "orders": "주문 수",
+    "order_quantity": "주문수량",
     "cancel_count": "취소건수",
     "cancel_rate_pct": "취소율(%)",
     "multiplier": "배수",
