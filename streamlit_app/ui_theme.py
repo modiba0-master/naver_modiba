@@ -214,11 +214,23 @@ def _dark_theme_css() -> str:
     border: 1px solid #30363d;
     border-bottom: none !important;
   }
-  /* Dataframe / grid */
+  /* Dataframe / grid — 래퍼·툴바는 DOM이라 어둡게, 셀 색은 data_grid Styler로 보강 */
   div[data-testid="stDataFrame"] {
     border: 1px solid #30363d;
     border-radius: 10px;
     overflow: hidden;
+    background-color: #0d1117 !important;
+  }
+  div[data-testid="stDataFrame"] > div {
+    background-color: #0d1117 !important;
+  }
+  div[data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
+    background-color: #161b22 !important;
+    border-bottom: 1px solid #30363d;
+  }
+  div[data-testid="stDataFrame"] [data-testid="stElementToolbar"] button,
+  div[data-testid="stDataFrame"] [data-testid="stElementToolbar"] [role="button"] {
+    color: #e6edf3 !important;
   }
   /* Alerts */
   div[data-testid="stAlert"] {

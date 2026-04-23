@@ -93,6 +93,60 @@ def _to_display_column_name(col: object) -> str:
     return COLUMN_MAP.get(original, COLUMN_MAP.get(_normalize_key_for_mapping(original), original))
 
 
+def _get_ui_theme_modern() -> bool:
+    """다크 UI 모드 여부(실패 시 False — 표는 기본 밝은 스타일)."""
+    try:
+        from ui_theme import UI_MODE_MODERN, get_ui_mode
+    except ImportError:
+        try:
+            from streamlit_app.ui_theme import UI_MODE_MODERN, get_ui_mode
+        except ImportError:
+            return False
+    try:
+        return get_ui_mode() == UI_MODE_MODERN
+    except Exception:
+        return False
+
+
+def _modiba_dark_styler(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """Streamlit Glide 표가 앱 테마보다 밝게 남는 경우 대비 — Styler로 셀·헤더 톤 통일."""
+    cell_bg = "#141a23"
+    text_fg = "#e6edf3"
+    header_bg = "#1c2636"
+    header_fg = "#b1bac4"
+    border = "#30363d"
+    return (
+        frame.style.set_properties(
+            **{
+                "background-color": cell_bg,
+                "color": text_fg,
+            }
+        )
+        .set_table_styles(
+            [
+                {
+                    "selector": "thead th",
+                    "props": [
+                        ("background-color", header_bg),
+                        ("color", header_fg),
+                        ("font-weight", "600"),
+                        ("border-bottom", f"1px solid {border}"),
+                    ],
+                },
+            ],
+            overwrite=False,
+        )
+    )
+
+
+def _prepare_dataframe_for_display(
+    frame: pd.DataFrame,
+) -> pd.DataFrame | pd.io.formats.style.Styler:
+    if frame.empty or not _get_ui_theme_modern():
+        return frame
+    return _modiba_dark_styler(frame)
+
+
 def _make_unique_column_headers(df: pd.DataFrame) -> pd.DataFrame:
     seen: dict[str, int] = {}
     new_cols: list[str] = []
@@ -119,7 +173,8 @@ def show_data_grid(data: pd.DataFrame | list | dict) -> None:
     df = _order_display_columns(df)
     df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
+    display_obj = _prepare_dataframe_for_display(df)
     try:
-        st.dataframe(df, width="stretch", hide_index=True)
+        st.dataframe(display_obj, width="stretch", hide_index=True)
     except TypeError:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(display_obj, use_container_width=True, hide_index=True)
