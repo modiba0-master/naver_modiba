@@ -124,12 +124,31 @@ def _modiba_dark_styler(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
     )
 
 
+def _highlight_total_rows(
+    styler: pd.io.formats.style.Styler,
+    frame: pd.DataFrame,
+) -> pd.io.formats.style.Styler:
+    """값이 '합계'인 행을 강조해 한눈에 보이게 한다."""
+
+    def _row_style(row: pd.Series) -> list[str]:
+        is_total = any(str(v).strip() == "합계" for v in row.tolist())
+        if not is_total:
+            return [""] * len(row)
+        return [
+            "background-color: #243247; color: #f0f6fc; font-weight: 700; border-top: 1px solid #4f6a88;"
+            for _ in row
+        ]
+
+    return styler.apply(_row_style, axis=1)
+
+
 def _prepare_dataframe_for_display(
     frame: pd.DataFrame,
 ) -> pd.DataFrame | pd.io.formats.style.Styler:
     if frame.empty:
         return frame
-    return _modiba_dark_styler(frame)
+    styler = _modiba_dark_styler(frame)
+    return _highlight_total_rows(styler, frame)
 
 
 def _make_unique_column_headers(df: pd.DataFrame) -> pd.DataFrame:
