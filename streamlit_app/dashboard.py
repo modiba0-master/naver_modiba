@@ -374,6 +374,34 @@ def _prepare_analysis_summary(
     return grouped
 
 
+def _append_analysis_total_row(
+    summary_df: pd.DataFrame,
+    *,
+    name_col: str,
+) -> pd.DataFrame:
+    """상품/옵션 분석표 하단 합계 행 추가."""
+    if summary_df.empty:
+        return summary_df
+    body = summary_df.copy()
+    total_amount = float(pd.to_numeric(body["total_amount"], errors="coerce").fillna(0).sum())
+    total_orders = int(pd.to_numeric(body["order_count"], errors="coerce").fillna(0).sum())
+    total_sold = float(pd.to_numeric(body["sold_quantity"], errors="coerce").fillna(0).sum())
+    avg_amount_per_order = (total_amount / total_orders) if total_orders > 0 else 0.0
+    total_row = pd.DataFrame(
+        [
+            {
+                name_col: "합계",
+                "order_count": total_orders,
+                "total_amount": total_amount,
+                "sales_share_pct": 100.0 if total_amount > 0 else 0.0,
+                "sold_quantity": total_sold,
+                "amount_per_order": avg_amount_per_order,
+            }
+        ]
+    )
+    return pd.concat([body, total_row], ignore_index=True)
+
+
 def _prepare_detail_ledger_for_display(
     frame: pd.DataFrame,
 ) -> tuple[pd.DataFrame, str | None]:
@@ -516,7 +544,8 @@ def main_content() -> None:
     if data_loaded_mode == "fallback":
         st.warning("네트워크/API 오류로 캐시된 마지막 정상 데이터를 표시 중입니다.")
 
-    default_end = datetime.now(KST).date()
+    now_kst = datetime.now(KST)
+    default_end = now_kst.date() + timedelta(days=1) if now_kst.hour >= 16 else now_kst.date()
     default_start = default_end
 
     section_heading("KPI")
@@ -697,6 +726,7 @@ def main_content() -> None:
             group_key="product_name",
             revenue_column=_rev_col,
         )
+        product_summary = _append_analysis_total_row(product_summary, name_col="product_name")
         product_summary = product_summary[
             [
                 "product_name",
@@ -715,6 +745,7 @@ def main_content() -> None:
             group_key="option_name",
             revenue_column=_rev_col,
         )
+        option_name_summary = _append_analysis_total_row(option_name_summary, name_col="option_name")
         option_name_summary = option_name_summary[
             [
                 "option_name",
