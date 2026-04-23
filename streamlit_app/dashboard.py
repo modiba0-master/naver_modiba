@@ -31,6 +31,14 @@ from services.kpi_from_filtered import (
     kpi_aggregate,
 )
 from services.kpi_ui import add_avg_ticket_to_daily, append_daily_total_row
+from ui_theme import (
+    UI_MODE_MODERN,
+    apply_dashboard_theme,
+    get_ui_mode,
+    render_page_title,
+    render_ui_rollback_control,
+    section_heading,
+)
 
 # HTTP로 주문 목록·DB 통계를 가져온다. 잘못된 URL이면 "어제와 같은 결과"처럼 보인다(다른/옛 백엔드 DB).
 # Railway: Streamlit 서비스에 `ANALYTICS_API_BASE_URL`로 실제 FastAPI(동기화+MariaDB) URL을 맞출 것.
@@ -369,22 +377,34 @@ def main_content() -> None:
 
     _safe_autorefresh(interval_ms=60000, key="naver_modiba_dashboard_autorefresh")
 
-    st.title("네이버 친절한 모디바 주문현황")
+    apply_dashboard_theme()
+    render_ui_rollback_control()
+
     api_base_url = DEFAULT_API_BASE_URL
     revenue_basis = "payment"
+    db_subtitle = ""
     try:
         ds = fetch_db_stats(api_base_url)
         _mark_api_success()
         lp = ds.get("latest_payment_date")
         lb = ds.get("latest_business_date")
-        st.write(
+        db_subtitle = (
             f"DB `orders` {int(ds.get('orders_count') or 0):,}건 · "
             f"최신 결제일시 {lp or '—'} · "
             f"최신 영업일(집계 `date`){lb or '—'}"
         )
     except Exception as exc:
         _mark_api_failure(exc)
-        st.write("DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다.")
+        db_subtitle = "DB 통계(`/analytics/db-stats`)를 불러오지 못했습니다."
+
+    if get_ui_mode() == UI_MODE_MODERN:
+        render_page_title(
+            "네이버 친절한 모디바 주문현황",
+            subtitle=db_subtitle,
+        )
+    else:
+        st.title("네이버 친절한 모디바 주문현황")
+        st.write(db_subtitle)
     _render_api_health_caption()
 
     data_loaded_at = ""
@@ -420,7 +440,7 @@ def main_content() -> None:
     default_end = datetime.now(KST).date()
     default_start = default_end
 
-    st.markdown("## KPI")
+    section_heading("KPI")
     kpi_col1, kpi_col2 = st.columns(2)
     with kpi_col1:
         kpi_start_date = st.date_input(
@@ -508,7 +528,7 @@ def main_content() -> None:
         )
 
     st.markdown("")
-    st.subheader("일자별")
+    section_heading("일자별", level=3)
     kpi_daily_start = default_end - timedelta(days=6)
     kpi_daily_mask = (
         (order_df["date"].dt.date >= kpi_daily_start)
@@ -542,7 +562,7 @@ def main_content() -> None:
     show_data_grid(daily_kpi)
 
     st.markdown("---")
-    st.markdown("## 분석")
+    section_heading("분석")
     ana_col1, ana_col2 = st.columns(2)
     with ana_col1:
         analysis_start_date = st.date_input(
