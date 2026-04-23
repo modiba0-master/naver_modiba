@@ -140,6 +140,12 @@ def extract_weight_unit(option_name: str) -> str:
     return f"{m.group(1)}{m.group(2).lower()}"
 
 
+def _is_icepack_size_16x23(product_name: object) -> bool:
+    """아이스팩 16x23 규격 상품은 수량 배수 보정 대상."""
+    text = str(product_name or "")
+    return ("아이스팩" in text) and bool(re.search(r"16\s*[xX]\s*23", text))
+
+
 def product_group(product_name: str) -> str:
     text = product_name if isinstance(product_name, str) else ""
     if "닭가슴살" in text:
@@ -334,6 +340,10 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     else:
         df["net_revenue"] = pd.to_numeric(df["net_revenue"], errors="coerce").fillna(0)
     df["multiplier"] = df["option_name"].apply(extract_multiplier)
+    # 아이스팩 16x23 규격명은 "x23"이 수량 배수가 아니라 사이즈 표기이므로 1개로 취급.
+    icepack_mask = df["product_name"].apply(_is_icepack_size_16x23)
+    if icepack_mask.any():
+        df.loc[icepack_mask, "multiplier"] = 1
     df["real_quantity"] = df["quantity"] * df["multiplier"]
     df["weight_unit"] = df["option_name"].apply(extract_weight_unit)
     df["pack_count"] = df["multiplier"]
