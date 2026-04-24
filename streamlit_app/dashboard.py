@@ -538,6 +538,34 @@ def _product_revenue_delta_table(
     return merged.sort_values("revenue_diff", ascending=False)
 
 
+def _append_summary_delta_total_row(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """경영요약 상승/하락 표 하단 합계 행 추가."""
+    if summary_df.empty:
+        return summary_df
+    body = summary_df.copy()
+    total_row = pd.DataFrame(
+        [
+            {
+                "option_product_label": "합계",
+                "current_revenue": float(
+                    pd.to_numeric(body["current_revenue"], errors="coerce").fillna(0).sum()
+                ),
+                "prev_revenue": float(
+                    pd.to_numeric(body["prev_revenue"], errors="coerce").fillna(0).sum()
+                ),
+                "revenue_diff": float(
+                    pd.to_numeric(body["revenue_diff"], errors="coerce").fillna(0).sum()
+                ),
+                "revenue_diff_pct": 0.0,
+            }
+        ]
+    )
+    base_prev = float(total_row.at[0, "prev_revenue"])
+    if base_prev > 0:
+        total_row.at[0, "revenue_diff_pct"] = float(total_row.at[0, "revenue_diff"]) / base_prev * 100.0
+    return pd.concat([body, total_row], ignore_index=True)
+
+
 def _sorted_business_dates_up_to(frame: pd.DataFrame, report_date: date) -> list[date]:
     s = frame["date"].dt.date
     return sorted({d for d in s.dropna().unique() if d <= report_date})
@@ -930,10 +958,6 @@ def main_content() -> None:
 
     report_date = default_end
     compare_date = report_date - timedelta(days=7)
-    report_summary = _daily_summary_from_orders(order_df, report_date)
-    compare_summary = _daily_summary_from_orders(order_df, compare_date)
-    forecast_amount, forecast_conf = _simple_nextday_forecast(order_df, report_date)
-    product_delta = _product_revenue_delta_table(order_df, report_date, compare_date)
     product_insight = _build_product_insight_table(order_df, report_date, compare_date)
     happycall_df = _build_happycall_candidates(order_df, report_date)
     margin_df = load_option_margin_snapshot(report_date)
@@ -945,6 +969,24 @@ def main_content() -> None:
 
     with tab_summary:
         section_heading("경영 요약 리포트")
+        available_dates = sorted({d for d in order_df["date"].dt.date.dropna().unique()})
+        if not available_dates:
+            st.caption("요약 기준일로 선택할 주문 데이터가 없습니다.")
+            st.stop()
+        summary_report_date = st.date_input(
+            "요약 기준일",
+            value=available_dates[-1],
+            min_value=available_dates[0],
+            max_value=available_dates[-1],
+            key="summary_report_date",
+            help="선택한 날짜의 당일 매출을 기준으로, 전주 동일요일(7일 전 하루)과 비교합니다.",
+        )
+        summary_compare_date = summary_report_date - timedelta(days=7)
+        report_summary = _daily_summary_from_orders(order_df, summary_report_date)
+        compare_summary = _daily_summary_from_orders(order_df, summary_compare_date)
+        forecast_amount, forecast_conf = _simple_nextday_forecast(order_df, summary_report_date)
+        product_delta = _product_revenue_delta_table(order_df, summary_report_date, summary_compare_date)
+
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric(
             "순매출",
@@ -972,7 +1014,7 @@ def main_content() -> None:
             _delta_text(report_summary["customer_count"], compare_summary["customer_count"]),
         )
         st.caption(
-            f"기준일 {report_date} · 전주 비교일 {compare_date} · "
+            f"기준일 {summary_report_date} · 전주 비교일 {summary_compare_date} · "
             f"내일 예상 매출 {forecast_amount:,.0f}원 (신뢰도 {forecast_conf})"
         )
 
@@ -986,6 +1028,7 @@ def main_content() -> None:
             ]
         ].copy()
         rise_df["option_product_label"] = rise_df["option_product_label"].map(_option_grid_display_text)
+        rise_df = _append_summary_delta_total_row(rise_df)
         fall_df = product_delta.sort_values("revenue_diff").head(5)[
             [
                 "option_product_label",
@@ -996,6 +1039,7 @@ def main_content() -> None:
             ]
         ].copy()
         fall_df["option_product_label"] = fall_df["option_product_label"].map(_option_grid_display_text)
+        fall_df = _append_summary_delta_total_row(fall_df)
 
         title_l, title_r = st.columns(2)
         with title_l:
