@@ -1422,7 +1422,7 @@ def main_content() -> None:
                     ]
                     qty_week = _append_totals_row(qty_show[qty_week_cols])
                     if not qty_week.empty:
-                        qty_week.at[len(qty_week) - 1, "weekly_qty_diff_pct"] = ""
+                        qty_week.at[len(qty_week) - 1, "weekly_qty_diff_pct"] = float("nan")
                     show_data_grid(qty_week, keep_input_order=True)
 
                     st.markdown("#### 수량 추이 - 월간/예측")
@@ -1438,7 +1438,7 @@ def main_content() -> None:
                     qty_month = qty_show[qty_month_cols].copy()
                     qty_month = _append_totals_row(qty_month)
                     if not qty_month.empty:
-                        qty_month.at[len(qty_month) - 1, "monthly_qty_diff_pct"] = ""
+                        qty_month.at[len(qty_month) - 1, "monthly_qty_diff_pct"] = float("nan")
                         qty_month.at[len(qty_month) - 1, "forecast_confidence"] = ""
                     show_data_grid(qty_month, keep_input_order=True)
                 if display_mode in ("금액", "수량+금액"):
