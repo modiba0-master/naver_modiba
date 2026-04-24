@@ -33,6 +33,7 @@ COLUMN_MAP: dict[str, str] = {
     "sales_share_pct": "매출비중(%)",
     "amount_per_order": "주문당 매출",
     "current_revenue": "당일매출",
+    "prev_revenue": "전주매출",
     "revenue_diff": "증감매출",
     "revenue_diff_pct": "증감률(%)",
     "today_order_qty": "오늘 주문수량",

@@ -63,6 +63,8 @@ HTTP_RETRY_ATTEMPTS = 3
 HTTP_RETRY_BACKOFF_SECONDS = 0.8
 # `/analytics/orders-raw` 조회 상한(영업일). 30일 중기·전주 비교에 맞추되 응답 크기를 최소화한다.
 ORDERS_RAW_FETCH_DAYS = 45
+# 경영요약 상승/하락 표: 동일 높이로 PC에서 하단 정렬이 맞도록 Glide 표 높이(px).
+SUMMARY_RISE_FALL_DATAFRAME_HEIGHT_PX = 320
 
 _WEEKDAY_KO = ("월", "화", "수", "목", "금", "토", "일")
 
@@ -974,21 +976,45 @@ def main_content() -> None:
             f"내일 예상 매출 {forecast_amount:,.0f}원 (신뢰도 {forecast_conf})"
         )
 
+        rise_df = product_delta.head(5)[
+            [
+                "option_product_label",
+                "current_revenue",
+                "prev_revenue",
+                "revenue_diff",
+                "revenue_diff_pct",
+            ]
+        ].copy()
+        rise_df["option_product_label"] = rise_df["option_product_label"].map(_option_grid_display_text)
+        fall_df = product_delta.sort_values("revenue_diff").head(5)[
+            [
+                "option_product_label",
+                "current_revenue",
+                "prev_revenue",
+                "revenue_diff",
+                "revenue_diff_pct",
+            ]
+        ].copy()
+        fall_df["option_product_label"] = fall_df["option_product_label"].map(_option_grid_display_text)
+
+        title_l, title_r = st.columns(2)
+        with title_l:
+            st.markdown("#### 전주 대비 상승 옵션 Top5")
+        with title_r:
+            st.markdown("#### 전주 대비 하락 옵션 Top5")
         rise_col, fall_col = st.columns(2)
         with rise_col:
-            st.markdown("#### 전주 대비 상승 옵션 Top5")
-            rise_df = product_delta.head(5)[
-                ["option_product_label", "current_revenue", "revenue_diff", "revenue_diff_pct"]
-            ].copy()
-            rise_df["option_product_label"] = rise_df["option_product_label"].map(_option_grid_display_text)
-            show_data_grid(rise_df, keep_input_order=True)
+            show_data_grid(
+                rise_df,
+                keep_input_order=True,
+                height=SUMMARY_RISE_FALL_DATAFRAME_HEIGHT_PX,
+            )
         with fall_col:
-            st.markdown("#### 전주 대비 하락 옵션 Top5")
-            fall_df = product_delta.sort_values("revenue_diff").head(5)[
-                ["option_product_label", "current_revenue", "revenue_diff", "revenue_diff_pct"]
-            ].copy()
-            fall_df["option_product_label"] = fall_df["option_product_label"].map(_option_grid_display_text)
-            show_data_grid(fall_df, keep_input_order=True)
+            show_data_grid(
+                fall_df,
+                keep_input_order=True,
+                height=SUMMARY_RISE_FALL_DATAFRAME_HEIGHT_PX,
+            )
 
         action_msgs: list[str] = []
         if report_summary["total_amount"] < compare_summary["total_amount"]:

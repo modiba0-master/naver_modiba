@@ -176,6 +176,7 @@ def show_data_grid(
     data: pd.DataFrame | list | dict,
     *,
     keep_input_order: bool = False,
+    height: int | None = None,
 ) -> None:
     _inject_full_width_dataframe_css_once()
     df_src = _ensure_dataframe(data)
@@ -187,7 +188,10 @@ def show_data_grid(
     df = _move_total_rows_to_bottom(df)
     df = _comma_format_numeric_columns(df)
     display_obj = _prepare_dataframe_for_display(df)
+    kwargs: dict = {"hide_index": True}
+    if height is not None:
+        kwargs["height"] = height
     try:
-        st.dataframe(display_obj, width="stretch", hide_index=True)
+        st.dataframe(display_obj, width="stretch", **kwargs)
     except TypeError:
-        st.dataframe(display_obj, use_container_width=True, hide_index=True)
+        st.dataframe(display_obj, use_container_width=True, **kwargs)
