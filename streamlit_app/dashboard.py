@@ -722,11 +722,12 @@ def _forecast_confidence_label(active_days: int) -> str:
 
 
 def _build_option_trend_snapshot(frame: pd.DataFrame, base_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """옵션상품명 기준 일/주/월 수량·매출 비교표 생성."""
+    """옵션상품명 기준 일/주/월 환산수량·매출 비교표 생성."""
     if frame.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     amount_col = "net_revenue" if "net_revenue" in frame.columns else "amount"
+    qty_col = "converted_quantity" if "converted_quantity" in frame.columns else "quantity"
     key_col = "option_product_label"
     df = frame.copy()
     if key_col not in df.columns:
@@ -741,7 +742,7 @@ def _build_option_trend_snapshot(frame: pd.DataFrame, base_date: date) -> tuple[
     daily = (
         scoped.groupby([key_col, "_d"], as_index=False)
         .agg(
-            qty=("quantity", lambda s: float(pd.to_numeric(s, errors="coerce").fillna(0).sum())),
+            qty=(qty_col, lambda s: float(pd.to_numeric(s, errors="coerce").fillna(0).sum())),
             rev=(amount_col, lambda s: float(pd.to_numeric(s, errors="coerce").fillna(0).sum())),
         )
     )
@@ -1330,22 +1331,107 @@ def main_content() -> None:
                 )
                 st.caption(
                     f"기준일 {product_base_date} · 주문①~⑥은 기준일 이전 1~6일 · "
+                    "수량은 환산수량(주문수량×내품수량) 기준 · "
                     "주/월 비교는 최근 구간 합계 vs 직전 동일 길이 구간 합계입니다."
                 )
+                day_labels_qty = {
+                    "base_day_qty": f"{product_base_date.day}일 수량",
+                    "order_1_qty": f"{(product_base_date - timedelta(days=1)).day}일 수량",
+                    "order_2_qty": f"{(product_base_date - timedelta(days=2)).day}일 수량",
+                    "order_3_qty": f"{(product_base_date - timedelta(days=3)).day}일 수량",
+                    "order_4_qty": f"{(product_base_date - timedelta(days=4)).day}일 수량",
+                    "order_5_qty": f"{(product_base_date - timedelta(days=5)).day}일 수량",
+                    "order_6_qty": f"{(product_base_date - timedelta(days=6)).day}일 수량",
+                }
+                day_labels_rev = {
+                    "base_day_rev": f"{product_base_date.day}일 매출",
+                    "order_1_rev": f"{(product_base_date - timedelta(days=1)).day}일 매출",
+                    "order_2_rev": f"{(product_base_date - timedelta(days=2)).day}일 매출",
+                    "order_3_rev": f"{(product_base_date - timedelta(days=3)).day}일 매출",
+                    "order_4_rev": f"{(product_base_date - timedelta(days=4)).day}일 매출",
+                    "order_5_rev": f"{(product_base_date - timedelta(days=5)).day}일 매출",
+                    "order_6_rev": f"{(product_base_date - timedelta(days=6)).day}일 매출",
+                }
                 if display_mode in ("수량", "수량+금액"):
                     qty_show = qty_trend[qty_cols].head(30).copy()
                     qty_show["option_product_label"] = qty_show["option_product_label"].map(
                         _option_grid_display_text
                     )
-                    st.markdown("#### 수량 추이")
-                    show_data_grid(qty_show, keep_input_order=True)
+                    st.markdown("#### 수량 추이 - 일자")
+                    qty_daily_cols = [
+                        "option_product_label",
+                        "base_day_qty",
+                        "order_1_qty",
+                        "order_2_qty",
+                        "order_3_qty",
+                        "order_4_qty",
+                        "order_5_qty",
+                        "order_6_qty",
+                    ]
+                    qty_daily = qty_show[qty_daily_cols].rename(columns=day_labels_qty)
+                    show_data_grid(qty_daily, keep_input_order=True)
+
+                    st.markdown("#### 수량 추이 - 주간")
+                    qty_week_cols = [
+                        "option_product_label",
+                        "recent_7d_qty_sum",
+                        "prev_7d_qty_sum",
+                        "weekly_qty_diff",
+                        "weekly_qty_diff_pct",
+                    ]
+                    show_data_grid(qty_show[qty_week_cols], keep_input_order=True)
+
+                    st.markdown("#### 수량 추이 - 월간/예측")
+                    qty_month_cols = [
+                        "option_product_label",
+                        "recent_30d_qty_sum",
+                        "prev_30d_qty_sum",
+                        "monthly_qty_diff",
+                        "monthly_qty_diff_pct",
+                        "next_7d_qty_forecast",
+                        "forecast_confidence",
+                    ]
+                    show_data_grid(qty_show[qty_month_cols], keep_input_order=True)
                 if display_mode in ("금액", "수량+금액"):
                     rev_show = rev_trend[rev_cols].head(30).copy()
                     rev_show["option_product_label"] = rev_show["option_product_label"].map(
                         _option_grid_display_text
                     )
-                    st.markdown("#### 금액 추이")
-                    show_data_grid(rev_show, keep_input_order=True)
+                    st.markdown("#### 금액 추이 - 일자")
+                    rev_daily_cols = [
+                        "option_product_label",
+                        "base_day_rev",
+                        "order_1_rev",
+                        "order_2_rev",
+                        "order_3_rev",
+                        "order_4_rev",
+                        "order_5_rev",
+                        "order_6_rev",
+                    ]
+                    rev_daily = rev_show[rev_daily_cols].rename(columns=day_labels_rev)
+                    show_data_grid(rev_daily, keep_input_order=True)
+
+                    st.markdown("#### 금액 추이 - 주간")
+                    rev_week_cols = [
+                        "option_product_label",
+                        "recent_7d_rev_sum",
+                        "prev_7d_rev_sum",
+                        "weekly_rev_diff",
+                        "weekly_rev_diff_pct",
+                    ]
+                    show_data_grid(rev_show[rev_week_cols], keep_input_order=True)
+
+                    st.markdown("#### 금액 추이 - 월간/예측")
+                    rev_month_cols = [
+                        "option_product_label",
+                        "recent_30d_rev_sum",
+                        "prev_30d_rev_sum",
+                        "monthly_rev_diff",
+                        "monthly_rev_diff_pct",
+                        "next_7d_rev_forecast",
+                        "forecast_confidence",
+                    ]
+                    show_data_grid(rev_show[rev_month_cols], keep_input_order=True)
 
     with tab_customer:
         section_heading("고객 이탈/해피콜 실행판", level=3)
