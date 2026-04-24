@@ -707,6 +707,145 @@ def _build_product_insight_table(
     return merged.sort_values("revenue_diff", ascending=False)
 
 
+def _safe_pct_change(curr: float, prev: float) -> float:
+    if prev == 0:
+        return 0.0
+    return ((curr - prev) / prev) * 100.0
+
+
+def _forecast_confidence_label(active_days: int) -> str:
+    if active_days >= 20:
+        return "상"
+    if active_days >= 10:
+        return "중"
+    return "하"
+
+
+def _build_option_trend_snapshot(frame: pd.DataFrame, base_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """옵션상품명 기준 일/주/월 수량·매출 비교표 생성."""
+    if frame.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    amount_col = "net_revenue" if "net_revenue" in frame.columns else "amount"
+    key_col = "option_product_label"
+    df = frame.copy()
+    if key_col not in df.columns:
+        df[key_col] = [_option_product_label(a, b) for a, b in zip(df["product_name"], df["option_name"])]
+    df["_d"] = df["date"].dt.date
+
+    min_date = base_date - timedelta(days=59)
+    scoped = df[(df["_d"] >= min_date) & (df["_d"] <= base_date)].copy()
+    if scoped.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    daily = (
+        scoped.groupby([key_col, "_d"], as_index=False)
+        .agg(
+            qty=("quantity", lambda s: float(pd.to_numeric(s, errors="coerce").fillna(0).sum())),
+            rev=(amount_col, lambda s: float(pd.to_numeric(s, errors="coerce").fillna(0).sum())),
+        )
+    )
+
+    options = sorted(daily[key_col].dropna().astype(str).unique().tolist())
+    qty_rows: list[dict[str, object]] = []
+    rev_rows: list[dict[str, object]] = []
+    for opt in options:
+        g = daily[daily[key_col] == opt].copy()
+        qty_map = {row["_d"]: float(row["qty"]) for _, row in g.iterrows()}
+        rev_map = {row["_d"]: float(row["rev"]) for _, row in g.iterrows()}
+
+        # 기준일(오늘) + 이전 1~6일
+        day_qty = [qty_map.get(base_date - timedelta(days=i), 0.0) for i in range(0, 7)]
+        day_rev = [rev_map.get(base_date - timedelta(days=i), 0.0) for i in range(0, 7)]
+        recent7_qty = float(sum(day_qty))
+        recent7_rev = float(sum(day_rev))
+
+        prev7_dates = [base_date - timedelta(days=i) for i in range(7, 14)]
+        prev7_qty = float(sum(qty_map.get(d, 0.0) for d in prev7_dates))
+        prev7_rev = float(sum(rev_map.get(d, 0.0) for d in prev7_dates))
+
+        recent30_dates = [base_date - timedelta(days=i) for i in range(0, 30)]
+        prev30_dates = [base_date - timedelta(days=i) for i in range(30, 60)]
+        recent30_qty = float(sum(qty_map.get(d, 0.0) for d in recent30_dates))
+        prev30_qty = float(sum(qty_map.get(d, 0.0) for d in prev30_dates))
+        recent30_rev = float(sum(rev_map.get(d, 0.0) for d in recent30_dates))
+        prev30_rev = float(sum(rev_map.get(d, 0.0) for d in prev30_dates))
+
+        qty_week_diff = recent7_qty - prev7_qty
+        qty_month_diff = recent30_qty - prev30_qty
+        rev_week_diff = recent7_rev - prev7_rev
+        rev_month_diff = recent30_rev - prev30_rev
+
+        qty_week_pct = _safe_pct_change(recent7_qty, prev7_qty)
+        qty_month_pct = _safe_pct_change(recent30_qty, prev30_qty)
+        rev_week_pct = _safe_pct_change(recent7_rev, prev7_rev)
+        rev_month_pct = _safe_pct_change(recent30_rev, prev30_rev)
+
+        active_days = int(g[g["_d"].isin(recent30_dates)]["_d"].nunique())
+        conf = _forecast_confidence_label(active_days)
+
+        short_avg_qty = recent7_qty / 7.0
+        med_avg_qty = recent30_qty / 30.0
+        next7_qty = ((short_avg_qty + med_avg_qty) / 2.0) * 7.0
+
+        short_avg_rev = recent7_rev / 7.0
+        med_avg_rev = recent30_rev / 30.0
+        next7_rev = ((short_avg_rev + med_avg_rev) / 2.0) * 7.0
+
+        qty_rows.append(
+            {
+                key_col: opt,
+                "base_day_qty": day_qty[0],
+                "order_1_qty": day_qty[1],
+                "order_2_qty": day_qty[2],
+                "order_3_qty": day_qty[3],
+                "order_4_qty": day_qty[4],
+                "order_5_qty": day_qty[5],
+                "order_6_qty": day_qty[6],
+                "recent_7d_qty_sum": recent7_qty,
+                "prev_7d_qty_sum": prev7_qty,
+                "weekly_qty_diff": qty_week_diff,
+                "weekly_qty_diff_pct": qty_week_pct,
+                "recent_30d_qty_sum": recent30_qty,
+                "prev_30d_qty_sum": prev30_qty,
+                "monthly_qty_diff": qty_month_diff,
+                "monthly_qty_diff_pct": qty_month_pct,
+                "next_7d_qty_forecast": next7_qty,
+                "forecast_confidence": conf,
+            }
+        )
+        rev_rows.append(
+            {
+                key_col: opt,
+                "base_day_rev": day_rev[0],
+                "order_1_rev": day_rev[1],
+                "order_2_rev": day_rev[2],
+                "order_3_rev": day_rev[3],
+                "order_4_rev": day_rev[4],
+                "order_5_rev": day_rev[5],
+                "order_6_rev": day_rev[6],
+                "recent_7d_rev_sum": recent7_rev,
+                "prev_7d_rev_sum": prev7_rev,
+                "weekly_rev_diff": rev_week_diff,
+                "weekly_rev_diff_pct": rev_week_pct,
+                "recent_30d_rev_sum": recent30_rev,
+                "prev_30d_rev_sum": prev30_rev,
+                "monthly_rev_diff": rev_month_diff,
+                "monthly_rev_diff_pct": rev_month_pct,
+                "next_7d_rev_forecast": next7_rev,
+                "forecast_confidence": conf,
+            }
+        )
+
+    qty_df = pd.DataFrame(qty_rows).sort_values(
+        ["weekly_qty_diff", "base_day_qty"], ascending=[False, False]
+    )
+    rev_df = pd.DataFrame(rev_rows).sort_values(
+        ["weekly_rev_diff", "base_day_rev"], ascending=[False, False]
+    )
+    return qty_df, rev_df
+
+
 def _safe_date(value: object) -> date | None:
     ts = pd.to_datetime(value, errors="coerce")
     if pd.isna(ts):
@@ -1013,7 +1152,6 @@ def main_content() -> None:
 
     report_date = default_end
     compare_date = report_date - timedelta(days=7)
-    product_insight = _build_product_insight_table(order_df, report_date, compare_date)
     happycall_df = _build_happycall_candidates(order_df, report_date)
     margin_df = load_option_margin_snapshot(report_date)
 
@@ -1127,34 +1265,87 @@ def main_content() -> None:
         st.info("오늘 실행 액션: " + " / ".join(action_msgs[:3]))
 
     with tab_product:
-        section_heading("상품 증감/원인/내일예측", level=3)
-        if product_insight.empty:
-            st.caption("분석 가능한 상품 데이터가 없습니다.")
+        section_heading("상품 옵션 추이(수량/매출)", level=3)
+        available_dates = sorted({d for d in order_df["date"].dt.date.dropna().unique()})
+        if not available_dates:
+            st.caption("상품 추이 분석에 사용할 날짜 데이터가 없습니다.")
         else:
-            insight_cols = [
-                "option_product_label",
-                "today_order_qty",
-                "today_sold_qty",
-                "today_revenue",
-                "revenue_diff",
-                "revenue_diff_pct",
-                "price_diff_pct",
-                "forecast_short",
-                "forecast_medium",
-                "forecast_balanced",
-                "forecast_upper",
-                "change_reason",
-            ]
-            st.caption(
-                f"기준일 {report_date} vs 전주 동일요일 {compare_date}. "
-                "단기·중기=로드된 영업일 중 최근 7일·30일(미만이면 가능한 만큼) 합계를 일수로 나눈 일평균 매출. "
-                "보합=(단기+중기)/2, 상한=max(단기,중기,오늘매출). 누적 기간이 짧으면 참고용입니다."
+            product_base_date = st.date_input(
+                "상품 분석 기준일",
+                value=available_dates[-1],
+                min_value=available_dates[0],
+                max_value=available_dates[-1],
+                key="product_base_date",
+                help="선택한 날짜를 기준으로 일/주/월 수량·매출 추이를 계산합니다.",
             )
-            insight_show = product_insight[insight_cols].head(20).copy()
-            insight_show["option_product_label"] = insight_show["option_product_label"].map(
-                _option_grid_display_text
-            )
-            show_data_grid(insight_show, keep_input_order=True)
+            qty_trend, rev_trend = _build_option_trend_snapshot(order_df, product_base_date)
+            if qty_trend.empty or rev_trend.empty:
+                st.caption("선택한 기준일에 분석 가능한 옵션 데이터가 없습니다.")
+            else:
+                qty_cols = [
+                    "option_product_label",
+                    "base_day_qty",
+                    "order_1_qty",
+                    "order_2_qty",
+                    "order_3_qty",
+                    "order_4_qty",
+                    "order_5_qty",
+                    "order_6_qty",
+                    "recent_7d_qty_sum",
+                    "prev_7d_qty_sum",
+                    "weekly_qty_diff",
+                    "weekly_qty_diff_pct",
+                    "recent_30d_qty_sum",
+                    "prev_30d_qty_sum",
+                    "monthly_qty_diff",
+                    "monthly_qty_diff_pct",
+                    "next_7d_qty_forecast",
+                    "forecast_confidence",
+                ]
+                rev_cols = [
+                    "option_product_label",
+                    "base_day_rev",
+                    "order_1_rev",
+                    "order_2_rev",
+                    "order_3_rev",
+                    "order_4_rev",
+                    "order_5_rev",
+                    "order_6_rev",
+                    "recent_7d_rev_sum",
+                    "prev_7d_rev_sum",
+                    "weekly_rev_diff",
+                    "weekly_rev_diff_pct",
+                    "recent_30d_rev_sum",
+                    "prev_30d_rev_sum",
+                    "monthly_rev_diff",
+                    "monthly_rev_diff_pct",
+                    "next_7d_rev_forecast",
+                    "forecast_confidence",
+                ]
+                display_mode = st.radio(
+                    "표시 기준",
+                    options=["수량", "금액", "수량+금액"],
+                    horizontal=True,
+                    key="product_trend_display_mode",
+                )
+                st.caption(
+                    f"기준일 {product_base_date} · 주문①~⑥은 기준일 이전 1~6일 · "
+                    "주/월 비교는 최근 구간 합계 vs 직전 동일 길이 구간 합계입니다."
+                )
+                if display_mode in ("수량", "수량+금액"):
+                    qty_show = qty_trend[qty_cols].head(30).copy()
+                    qty_show["option_product_label"] = qty_show["option_product_label"].map(
+                        _option_grid_display_text
+                    )
+                    st.markdown("#### 수량 추이")
+                    show_data_grid(qty_show, keep_input_order=True)
+                if display_mode in ("금액", "수량+금액"):
+                    rev_show = rev_trend[rev_cols].head(30).copy()
+                    rev_show["option_product_label"] = rev_show["option_product_label"].map(
+                        _option_grid_display_text
+                    )
+                    st.markdown("#### 금액 추이")
+                    show_data_grid(rev_show, keep_input_order=True)
 
     with tab_customer:
         section_heading("고객 이탈/해피콜 실행판", level=3)
