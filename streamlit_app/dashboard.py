@@ -847,6 +847,28 @@ def _build_option_trend_snapshot(frame: pd.DataFrame, base_date: date) -> tuple[
     return qty_df, rev_df
 
 
+def _append_totals_row(
+    frame: pd.DataFrame,
+    *,
+    label_col: str = "option_product_label",
+    label_text: str = "합계",
+) -> pd.DataFrame:
+    """숫자 컬럼 합계 하단 행 추가."""
+    if frame.empty:
+        return frame
+    out = frame.copy()
+    numeric_cols = [c for c in out.columns if c != label_col]
+    total_data: dict[str, object] = {label_col: label_text}
+    for col in numeric_cols:
+        s = pd.to_numeric(out[col], errors="coerce")
+        if s.notna().any():
+            total_data[col] = float(s.fillna(0).sum())
+        else:
+            total_data[col] = ""
+    total_row = pd.DataFrame([total_data])
+    return pd.concat([out, total_row], ignore_index=True)
+
+
 def _safe_date(value: object) -> date | None:
     ts = pd.to_datetime(value, errors="coerce")
     if pd.isna(ts):
@@ -1283,6 +1305,19 @@ def main_content() -> None:
             if qty_trend.empty or rev_trend.empty:
                 st.caption("선택한 기준일에 분석 가능한 옵션 데이터가 없습니다.")
             else:
+                qty_trend = qty_trend.sort_values(
+                    ["base_day_qty", "weekly_qty_diff"],
+                    ascending=[False, False],
+                )
+                base_qty_for_sort = qty_trend[["option_product_label", "base_day_qty"]].copy()
+                rev_trend = rev_trend.merge(base_qty_for_sort, on="option_product_label", how="left")
+                rev_trend["base_day_qty"] = pd.to_numeric(
+                    rev_trend["base_day_qty"], errors="coerce"
+                ).fillna(0.0)
+                rev_trend = rev_trend.sort_values(
+                    ["base_day_qty", "base_day_rev", "weekly_rev_diff"],
+                    ascending=[False, False, False],
+                )
                 qty_cols = [
                     "option_product_label",
                     "base_day_qty",
@@ -1369,6 +1404,12 @@ def main_content() -> None:
                         "order_6_qty",
                     ]
                     qty_daily = qty_show[qty_daily_cols].rename(columns=day_labels_qty)
+                    day_sum_cols = [c for c in qty_daily.columns if c != "option_product_label"]
+                    qty_daily["일자 합계"] = pd.to_numeric(
+                        qty_daily[day_sum_cols].sum(axis=1),
+                        errors="coerce",
+                    ).fillna(0.0)
+                    qty_daily = _append_totals_row(qty_daily)
                     show_data_grid(qty_daily, keep_input_order=True)
 
                     st.markdown("#### 수량 추이 - 주간")
@@ -1379,7 +1420,10 @@ def main_content() -> None:
                         "weekly_qty_diff",
                         "weekly_qty_diff_pct",
                     ]
-                    show_data_grid(qty_show[qty_week_cols], keep_input_order=True)
+                    qty_week = _append_totals_row(qty_show[qty_week_cols])
+                    if not qty_week.empty:
+                        qty_week.at[len(qty_week) - 1, "weekly_qty_diff_pct"] = ""
+                    show_data_grid(qty_week, keep_input_order=True)
 
                     st.markdown("#### 수량 추이 - 월간/예측")
                     qty_month_cols = [
@@ -1391,7 +1435,12 @@ def main_content() -> None:
                         "next_7d_qty_forecast",
                         "forecast_confidence",
                     ]
-                    show_data_grid(qty_show[qty_month_cols], keep_input_order=True)
+                    qty_month = qty_show[qty_month_cols].copy()
+                    qty_month = _append_totals_row(qty_month)
+                    if not qty_month.empty:
+                        qty_month.at[len(qty_month) - 1, "monthly_qty_diff_pct"] = ""
+                        qty_month.at[len(qty_month) - 1, "forecast_confidence"] = ""
+                    show_data_grid(qty_month, keep_input_order=True)
                 if display_mode in ("금액", "수량+금액"):
                     rev_show = rev_trend[rev_cols].head(30).copy()
                     rev_show["option_product_label"] = rev_show["option_product_label"].map(
