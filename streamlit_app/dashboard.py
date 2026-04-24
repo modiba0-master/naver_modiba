@@ -783,7 +783,8 @@ def _build_happycall_candidates(
             action = "충성 고객 감사 혜택 안내"
 
         recent_dates = sorted(order_days, reverse=True)
-        recent_orders = recent_dates[:5]
+        # 최근주문일은 별도 컬럼으로 두고, 주문①~⑤는 "직전 주문"부터 보여준다.
+        recent_orders = recent_dates[1:6]
         previous_order = recent_dates[1] if len(recent_dates) >= 2 else None
         reorder_gap_days = (recent_dates[0] - recent_dates[1]).days if len(recent_dates) >= 2 else None
         option_rollup = (
@@ -1173,7 +1174,23 @@ def main_content() -> None:
             c3.metric("평균 지연일", f"{avg_delay:.1f}일")
             c4.metric("우선대상 예상 LTV", f"{top_revenue_target:,.0f}원")
 
-            st.caption("최근 3개월 주문 기준 · 최근주문일 최신순 정렬")
+            available_recent_dates = sorted({d for d in happycall_df["recent_order_date"].dropna().tolist()})
+            if not available_recent_dates:
+                st.caption("최근주문일 기준으로 표시할 데이터가 없습니다.")
+                st.stop()
+            customer_base_date = st.date_input(
+                "고객 조회 기준일",
+                value=available_recent_dates[-1],
+                min_value=available_recent_dates[0],
+                max_value=available_recent_dates[-1],
+                key="customer_recent_base_date",
+                help="선택한 기준일 + 전일(2일) 구간의 최근주문 고객을 표시합니다.",
+            )
+            customer_window_start = customer_base_date - timedelta(days=1)
+            st.caption(
+                f"최근 3개월 주문 기준 · 최근주문일 {customer_window_start}~{customer_base_date} "
+                "필터 · 재주문기간(일) 짧은순 정렬"
+            )
             action_choices = sorted(
                 happycall_df["recommended_action"].dropna().astype(str).unique().tolist()
             )
@@ -1189,9 +1206,19 @@ def main_content() -> None:
                 if not selected_actions
                 else happycall_df[happycall_df["recommended_action"].isin(selected_actions)]
             )
+            display_happycall = display_happycall[
+                (display_happycall["recent_order_date"] >= customer_window_start)
+                & (display_happycall["recent_order_date"] <= customer_base_date)
+            ]
+            display_happycall = display_happycall.copy()
+            display_happycall["_reorder_sort"] = (
+                pd.to_numeric(display_happycall["reorder_days"], errors="coerce")
+                .fillna(999999)
+                .astype(float)
+            )
             display_happycall = display_happycall.sort_values(
-                ["recent_order_date", "priority_score"],
-                ascending=[False, False],
+                ["_reorder_sort", "recent_order_date", "priority_score"],
+                ascending=[True, False, False],
             )
             call_cols = [
                 "buyer_id",
