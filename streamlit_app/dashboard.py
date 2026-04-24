@@ -61,8 +61,8 @@ KST = ZoneInfo("Asia/Seoul")
 HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=20.0, pool=5.0)
 HTTP_RETRY_ATTEMPTS = 3
 HTTP_RETRY_BACKOFF_SECONDS = 0.8
-# `/analytics/orders-raw` 조회 상한(영업일). 30일 중기·전주 비교에 맞추되 응답 크기를 최소화한다.
-ORDERS_RAW_FETCH_DAYS = 45
+# `/analytics/orders-raw` 조회 상한(영업일). 고객탭 3개월 패턴 분석까지 포함해 여유를 둔다.
+ORDERS_RAW_FETCH_DAYS = 95
 # 경영요약 상승/하락 표: 동일 높이로 PC에서 하단 정렬이 맞도록 Glide 표 높이(px).
 SUMMARY_RISE_FALL_DATAFRAME_HEIGHT_PX = 320
 
@@ -113,6 +113,15 @@ def _format_sales_date_compact(value: object) -> str:
         return ""
     d = ts.date()
     return f"{d.month}/{d.day} ({_WEEKDAY_KO[d.weekday()]})"
+
+
+def _format_month_day(value: object) -> str:
+    """간단 날짜 표기: M/D."""
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return ""
+    d = ts.date()
+    return f"{d.month}/{d.day}"
 
 
 def _aggregate_kpi_daily(kpi_daily_table: pd.DataFrame) -> pd.DataFrame:
@@ -705,10 +714,23 @@ def _safe_date(value: object) -> date | None:
     return ts.date()
 
 
-def _build_happycall_candidates(frame: pd.DataFrame, report_date: date) -> pd.DataFrame:
+def _build_happycall_candidates(
+    frame: pd.DataFrame,
+    report_date: date,
+    *,
+    lookback_days: int = 92,
+) -> pd.DataFrame:
     """고객별 이탈 위험/해피콜 우선순위 후보를 계산한다."""
+    from_date = report_date - timedelta(days=max(1, int(lookback_days)) - 1)
+    scoped = frame[
+        (frame["date"].dt.date >= from_date)
+        & (frame["date"].dt.date <= report_date)
+    ].copy()
+    if scoped.empty:
+        return pd.DataFrame()
+
     rows: list[dict[str, object]] = []
-    for buyer_id, grp in frame.groupby("buyer_id"):
+    for buyer_id, grp in scoped.groupby("buyer_id"):
         buyer = str(buyer_id or "").strip()
         if not buyer:
             continue
@@ -760,6 +782,29 @@ def _build_happycall_candidates(frame: pd.DataFrame, report_date: date) -> pd.Da
         else:
             action = "충성 고객 감사 혜택 안내"
 
+        recent_dates = sorted(order_days, reverse=True)
+        recent_orders = recent_dates[:5]
+        previous_order = recent_dates[1] if len(recent_dates) >= 2 else None
+        reorder_gap_days = (recent_dates[0] - recent_dates[1]).days if len(recent_dates) >= 2 else None
+        option_rollup = (
+            g.groupby("option_product_label", as_index=False)
+            .agg(
+                option_order_count=("order_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
+                option_revenue=("net_revenue", lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum()),
+            )
+            .sort_values(["option_order_count", "option_revenue"], ascending=[False, False])
+        )
+        if option_rollup.empty:
+            top_option = ""
+            top_option_orders = 0
+            top_option_revenue = 0.0
+        else:
+            top_row = option_rollup.iloc[0]
+            top_option = str(top_row["option_product_label"] or "")
+            top_option_orders = int(top_row["option_order_count"])
+            top_option_revenue = float(top_row["option_revenue"])
+        top_option_share_pct = (top_option_revenue / total_revenue * 100.0) if total_revenue > 0 else 0.0
+
         rows.append(
             {
                 "buyer_id": buyer,
@@ -773,14 +818,23 @@ def _build_happycall_candidates(frame: pd.DataFrame, report_date: date) -> pd.Da
                 "delay_days": delay_days,
                 "priority_score": float(score),
                 "recommended_action": action,
+                "recent_order_date": recent_dates[0],
+                "order_1_date": recent_orders[0] if len(recent_orders) >= 1 else None,
+                "order_2_date": recent_orders[1] if len(recent_orders) >= 2 else None,
+                "order_3_date": recent_orders[2] if len(recent_orders) >= 3 else None,
+                "order_4_date": recent_orders[3] if len(recent_orders) >= 4 else None,
+                "order_5_date": recent_orders[4] if len(recent_orders) >= 5 else None,
+                "previous_order_date": previous_order,
+                "reorder_days": reorder_gap_days,
+                "top_option_product": _option_grid_display_text(top_option),
+                "top_option_order_count": top_option_orders,
+                "top_option_revenue": top_option_revenue,
+                "top_option_revenue_share_pct": top_option_share_pct,
             }
         )
     if not rows:
         return pd.DataFrame()
-    out = pd.DataFrame(rows).sort_values(
-        ["priority_score", "delay_days", "revenue_lifetime"],
-        ascending=[False, False, False],
-    )
+    out = pd.DataFrame(rows).sort_values(["recent_order_date", "priority_score"], ascending=[False, False])
     return out
 
 
@@ -1119,7 +1173,7 @@ def main_content() -> None:
             c3.metric("평균 지연일", f"{avg_delay:.1f}일")
             c4.metric("우선대상 예상 LTV", f"{top_revenue_target:,.0f}원")
 
-            st.caption("우선순위 점수 기준 상위 고객부터 해피콜 실행")
+            st.caption("최근 3개월 주문 기준 · 최근주문일 최신순 정렬")
             action_choices = sorted(
                 happycall_df["recommended_action"].dropna().astype(str).unique().tolist()
             )
@@ -1135,9 +1189,25 @@ def main_content() -> None:
                 if not selected_actions
                 else happycall_df[happycall_df["recommended_action"].isin(selected_actions)]
             )
+            display_happycall = display_happycall.sort_values(
+                ["recent_order_date", "priority_score"],
+                ascending=[False, False],
+            )
             call_cols = [
                 "buyer_id",
                 "buyer_name",
+                "recent_order_date",
+                "order_1_date",
+                "order_2_date",
+                "order_3_date",
+                "order_4_date",
+                "order_5_date",
+                "previous_order_date",
+                "reorder_days",
+                "top_option_product",
+                "top_option_order_count",
+                "top_option_revenue",
+                "top_option_revenue_share_pct",
                 "segment",
                 "last_order_date",
                 "expected_next_order_date",
@@ -1150,7 +1220,19 @@ def main_content() -> None:
             if display_happycall.empty:
                 st.caption("선택한 권장 액션에 해당하는 행이 없습니다. 필터를 해제하세요.")
             else:
-                show_data_grid(display_happycall[call_cols].head(30), keep_input_order=True)
+                display_happycall_show = display_happycall[call_cols].head(30).copy()
+                compact_date_cols = [
+                    "recent_order_date",
+                    "order_1_date",
+                    "order_2_date",
+                    "order_3_date",
+                    "order_4_date",
+                    "order_5_date",
+                    "previous_order_date",
+                ]
+                for col in compact_date_cols:
+                    display_happycall_show[col] = display_happycall_show[col].map(_format_month_day)
+                show_data_grid(display_happycall_show, keep_input_order=True)
 
     with tab_margin:
         section_heading("가격-매출-마진 방어판", level=3)
