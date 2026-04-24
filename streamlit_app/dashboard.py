@@ -891,11 +891,26 @@ def _build_happycall_candidates(
     if scoped.empty:
         return pd.DataFrame()
 
+    def _customer_composite_key(row: pd.Series) -> str:
+        bid = str(row.get("buyer_id", "") or "").strip()
+        bname = str(row.get("buyer_name", "") or "").strip()
+        if bid and bname:
+            return f"{bid}||{bname}"
+        if bid:
+            return f"{bid}||"
+        if bname:
+            return f"||{bname}"
+        return ""
+
+    scoped["_customer_key"] = scoped.apply(_customer_composite_key, axis=1)
+
     rows: list[dict[str, object]] = []
-    for buyer_id, grp in scoped.groupby("buyer_id"):
-        buyer = str(buyer_id or "").strip()
-        if not buyer:
+    for customer_key, grp in scoped.groupby("_customer_key"):
+        if not str(customer_key or "").strip():
             continue
+        first = grp.iloc[0]
+        buyer = str(first.get("buyer_id", "") or "").strip()
+        customer_name = str(first.get("buyer_name", "") or "").strip()
         g = grp.sort_values("date")
         order_days = sorted(
             {d for d in (_safe_date(v) for v in g["date"]) if d is not None}
@@ -905,7 +920,6 @@ def _build_happycall_candidates(
         last_order_date = order_days[-1]
         order_count = len(order_days)
         total_revenue = float(pd.to_numeric(g["net_revenue"], errors="coerce").fillna(0).sum())
-        customer_name = str(g["buyer_name"].dropna().iloc[-1]) if g["buyer_name"].notna().any() else ""
 
         if order_count >= 2:
             cycles = [
