@@ -6,7 +6,7 @@ import sys
 import time
 import hmac
 from typing import Any
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -61,8 +61,25 @@ KST = ZoneInfo("Asia/Seoul")
 HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=20.0, pool=5.0)
 HTTP_RETRY_ATTEMPTS = 3
 HTTP_RETRY_BACKOFF_SECONDS = 0.8
+# `/analytics/orders-raw` 조회 상한(영업일). 30일 중기·전주 비교에 맞추되 응답 크기를 최소화한다.
+ORDERS_RAW_FETCH_DAYS = 45
 
 _WEEKDAY_KO = ("월", "화", "수", "목", "금", "토", "일")
+
+
+def _kst_anchor_business_date() -> date:
+    """대시보드 KPI 기준일과 동일: 16시 이후면 익일 영업일 달력."""
+    now_kst = datetime.now(KST)
+    return now_kst.date() + timedelta(days=1) if now_kst.hour >= 16 else now_kst.date()
+
+
+def _option_product_label(product_name: object, option_name: object) -> str:
+    """집계·표시용 옵션상품명(상품명 + 옵션). 신규 코드 없이 문자열로만 통일."""
+    pn = str(product_name or "").strip()
+    on = str(option_name or "").strip()
+    if not on or on.lower() == "nan":
+        return pn
+    return f"{pn} — {on}"
 
 
 def _format_sales_date_label(d: date) -> str:
@@ -185,12 +202,18 @@ def _http_get_json_with_retry(
 
 
 @st.cache_data(ttl=60)
-def fetch_order_data(base_url: str, revenue_basis: str = "payment") -> pd.DataFrame:
+def fetch_order_data(
+    base_url: str,
+    revenue_basis: str = "payment",
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> pd.DataFrame:
     url = base_url.rstrip("/")
-    payload = _http_get_json_with_retry(
-        f"{url}/analytics/orders-raw",
-        params={"revenue_basis": revenue_basis},
-    )
+    params: dict[str, Any] = {"revenue_basis": revenue_basis}
+    if start_date is not None and end_date is not None:
+        params["start_date"] = datetime.combine(start_date, time.min, tzinfo=KST).isoformat()
+        params["end_date"] = datetime.combine(end_date, time(23, 59, 59), tzinfo=KST).isoformat()
+    payload = _http_get_json_with_retry(f"{url}/analytics/orders-raw", params=params)
     items = payload.get("items", [])
     return pd.DataFrame(items)
 
@@ -357,6 +380,9 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     df["short_address"] = df["address"].astype(str).str.slice(0, 20)
     if "customer_id" not in df.columns:
         df["customer_id"] = df["buyer_id"]
+    df["option_product_label"] = [
+        _option_product_label(a, b) for a, b in zip(df["product_name"], df["option_name"])
+    ]
     df = df.dropna(subset=["date"]).copy()
     return df
 
@@ -471,17 +497,18 @@ def _product_revenue_delta_table(
     compare_date: date,
 ) -> pd.DataFrame:
     amount_col = "net_revenue" if "net_revenue" in frame.columns else "amount"
+    key = "option_product_label"
     curr = (
         frame[frame["date"].dt.date == current_date]
-        .groupby("product_name", as_index=False)
+        .groupby(key, as_index=False)
         .agg(current_revenue=(amount_col, "sum"))
     )
     prev = (
         frame[frame["date"].dt.date == compare_date]
-        .groupby("product_name", as_index=False)
+        .groupby(key, as_index=False)
         .agg(prev_revenue=(amount_col, "sum"))
     )
-    merged = curr.merge(prev, on="product_name", how="outer").fillna(0.0)
+    merged = curr.merge(prev, on=key, how="outer").fillna(0.0)
     if merged.empty:
         return merged
     merged["revenue_diff"] = merged["current_revenue"] - merged["prev_revenue"]
@@ -490,6 +517,34 @@ def _product_revenue_delta_table(
         axis=1,
     )
     return merged.sort_values("revenue_diff", ascending=False)
+
+
+def _sorted_business_dates_up_to(frame: pd.DataFrame, report_date: date) -> list[date]:
+    s = frame["date"].dt.date
+    return sorted({d for d in s.dropna().unique() if d <= report_date})
+
+
+def _option_avg_daily_in_tail_window(
+    frame: pd.DataFrame,
+    *,
+    amount_col: str,
+    report_date: date,
+    calendar_days: int,
+    key_col: str,
+) -> pd.DataFrame:
+    """최근 min(calendar_days, 로드된 영업일 수)일에서 옵션상품명별 일평균 매출(누적합/달력일수)."""
+    dates = _sorted_business_dates_up_to(frame, report_date)
+    if not dates:
+        return pd.DataFrame(columns=[key_col, "avg_daily"])
+    use_n = min(int(calendar_days), len(dates))
+    tail = set(dates[-use_n:])
+    df = frame.assign(_d=frame["date"].dt.date)
+    df = df[df["_d"].isin(tail)]
+    if df.empty:
+        return pd.DataFrame(columns=[key_col, "avg_daily"])
+    g = df.groupby(key_col, as_index=False).agg(_total=(amount_col, "sum"))
+    g["avg_daily"] = g["_total"] / float(use_n)
+    return g[[key_col, "avg_daily"]]
 
 
 def _simple_nextday_forecast(frame: pd.DataFrame, report_date: date) -> tuple[float, str]:
@@ -514,14 +569,17 @@ def _build_product_insight_table(
     report_date: date,
     compare_date: date,
 ) -> pd.DataFrame:
-    """상품별 증감, 원인 추정, 내일 예측치를 생성한다."""
+    """옵션상품명별 증감, 원인 추정, 단기·중기·보합·상한 예측 참고(로드된 DB 구간만 사용)."""
     amount_col = "net_revenue" if "net_revenue" in frame.columns else "amount"
+    key = "option_product_label"
     df = frame.copy()
+    if key not in df.columns:
+        df[key] = [_option_product_label(a, b) for a, b in zip(df["product_name"], df["option_name"])]
     df["_biz_date"] = df["date"].dt.date
 
     curr = (
         df[df["_biz_date"] == report_date]
-        .groupby("product_name", as_index=False)
+        .groupby(key, as_index=False)
         .agg(
             today_revenue=(amount_col, "sum"),
             today_order_qty=("quantity", "sum"),
@@ -532,7 +590,7 @@ def _build_product_insight_table(
     )
     prev = (
         df[df["_biz_date"] == compare_date]
-        .groupby("product_name", as_index=False)
+        .groupby(key, as_index=False)
         .agg(
             prev_revenue=(amount_col, "sum"),
             prev_order_qty=("quantity", "sum"),
@@ -540,7 +598,7 @@ def _build_product_insight_table(
             prev_customer_count=("buyer_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
         )
     )
-    merged = curr.merge(prev, on="product_name", how="outer").fillna(0.0)
+    merged = curr.merge(prev, on=key, how="outer").fillna(0.0)
     if merged.empty:
         return merged
 
@@ -561,13 +619,18 @@ def _build_product_insight_table(
         axis=1,
     )
 
-    recent_base = df[df["_biz_date"].between(report_date - timedelta(days=6), report_date)]
-    next_forecast = (
-        recent_base.groupby("product_name", as_index=False)
-        .agg(nextday_forecast_revenue=(amount_col, "mean"))
-    )
-    merged = merged.merge(next_forecast, on="product_name", how="left")
-    merged["nextday_forecast_revenue"] = merged["nextday_forecast_revenue"].fillna(0.0)
+    short_df = _option_avg_daily_in_tail_window(
+        df, amount_col=amount_col, report_date=report_date, calendar_days=7, key_col=key
+    ).rename(columns={"avg_daily": "forecast_short"})
+    med_df = _option_avg_daily_in_tail_window(
+        df, amount_col=amount_col, report_date=report_date, calendar_days=30, key_col=key
+    ).rename(columns={"avg_daily": "forecast_medium"})
+    merged = merged.merge(short_df, on=key, how="left")
+    merged = merged.merge(med_df, on=key, how="left")
+    merged["forecast_short"] = pd.to_numeric(merged["forecast_short"], errors="coerce").fillna(0.0)
+    merged["forecast_medium"] = pd.to_numeric(merged["forecast_medium"], errors="coerce").fillna(0.0)
+    merged["forecast_balanced"] = (merged["forecast_short"] + merged["forecast_medium"]) / 2.0
+    merged["forecast_upper"] = merged[["forecast_short", "forecast_medium", "today_revenue"]].max(axis=1)
 
     def _reason(row: pd.Series) -> str:
         reasons: list[str] = []
@@ -799,10 +862,13 @@ def main_content() -> None:
     )
     _render_api_health_caption()
 
+    anchor = _kst_anchor_business_date()
+    fetch_start = anchor - timedelta(days=ORDERS_RAW_FETCH_DAYS)
+
     data_loaded_at = ""
     data_loaded_mode = "live"
     try:
-        raw_df = fetch_order_data(api_base_url, revenue_basis)
+        raw_df = fetch_order_data(api_base_url, revenue_basis, fetch_start, anchor)
         order_df = normalize_order_data(raw_df)
         st.session_state["last_good_order_df"] = order_df.copy()
         data_loaded_at = format_now_kst()
@@ -826,11 +892,17 @@ def main_content() -> None:
     if order_df.empty:
         st.stop()
 
+    if "option_product_label" not in order_df.columns:
+        order_df = order_df.copy()
+        order_df["option_product_label"] = [
+            _option_product_label(a, b) for a, b in zip(order_df["product_name"], order_df["option_name"])
+        ]
+
     if data_loaded_mode == "fallback":
         st.warning("네트워크/API 오류로 캐시된 마지막 정상 데이터를 표시 중입니다.")
 
     now_kst = datetime.now(KST)
-    default_end = now_kst.date() + timedelta(days=1) if now_kst.hour >= 16 else now_kst.date()
+    default_end = anchor
     default_start = default_end
 
     tab_kpi, tab_summary, tab_customer, tab_product, tab_margin, tab_detail = st.tabs(
@@ -887,19 +959,21 @@ def main_content() -> None:
 
         rise_col, fall_col = st.columns(2)
         with rise_col:
-            st.markdown("#### 전주 대비 상승 상품 Top5")
-            rise_df = product_delta.head(5)[["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]]
+            st.markdown("#### 전주 대비 상승 옵션 Top5")
+            rise_df = product_delta.head(5)[
+                ["option_product_label", "current_revenue", "revenue_diff", "revenue_diff_pct"]
+            ]
             show_data_grid(rise_df, keep_input_order=True)
         with fall_col:
-            st.markdown("#### 전주 대비 하락 상품 Top5")
+            st.markdown("#### 전주 대비 하락 옵션 Top5")
             fall_df = product_delta.sort_values("revenue_diff").head(5)[
-                ["product_name", "current_revenue", "revenue_diff", "revenue_diff_pct"]
+                ["option_product_label", "current_revenue", "revenue_diff", "revenue_diff_pct"]
             ]
             show_data_grid(fall_df, keep_input_order=True)
 
         action_msgs: list[str] = []
         if report_summary["total_amount"] < compare_summary["total_amount"]:
-            action_msgs.append("순매출이 전주 대비 하락: 하락 Top 상품 옵션/가격/노출 상태를 우선 점검하세요.")
+            action_msgs.append("순매출이 전주 대비 하락: 하락 Top 옵션의 가격·노출·재고를 우선 점검하세요.")
         if report_summary["customer_count"] < compare_summary["customer_count"]:
             action_msgs.append("고객수가 감소: 최근 2주 미주문 고객 리마인드(해피콜/메시지) 캠페인을 진행하세요.")
         if forecast_amount < report_summary["total_amount"]:
@@ -914,17 +988,24 @@ def main_content() -> None:
             st.caption("분석 가능한 상품 데이터가 없습니다.")
         else:
             insight_cols = [
-                "product_name",
+                "option_product_label",
                 "today_order_qty",
                 "today_sold_qty",
                 "today_revenue",
                 "revenue_diff",
                 "revenue_diff_pct",
                 "price_diff_pct",
-                "nextday_forecast_revenue",
+                "forecast_short",
+                "forecast_medium",
+                "forecast_balanced",
+                "forecast_upper",
                 "change_reason",
             ]
-            st.caption("기준: 오늘 vs 전주 동일요일, 내일 예측은 최근 7일 평균")
+            st.caption(
+                f"기준일 {report_date} vs 전주 동일요일 {compare_date}. "
+                "단기·중기=로드된 영업일 중 최근 7일·30일(미만이면 가능한 만큼) 합계를 일수로 나눈 일평균 매출. "
+                "보합=(단기+중기)/2, 상한=max(단기,중기,오늘매출). 누적 기간이 짧으면 참고용입니다."
+            )
             show_data_grid(product_insight[insight_cols].head(20), keep_input_order=True)
 
     with tab_customer:
@@ -946,6 +1027,21 @@ def main_content() -> None:
             c4.metric("우선대상 예상 LTV", f"{top_revenue_target:,.0f}원")
 
             st.caption("우선순위 점수 기준 상위 고객부터 해피콜 실행")
+            action_choices = sorted(
+                happycall_df["recommended_action"].dropna().astype(str).unique().tolist()
+            )
+            selected_actions = st.multiselect(
+                "권장 액션 필터",
+                options=action_choices,
+                default=[],
+                key="happycall_recommended_action_filter",
+                help="선택한 권장 액션만 표에 표시합니다. 선택이 없으면 전체입니다.",
+            )
+            display_happycall = (
+                happycall_df
+                if not selected_actions
+                else happycall_df[happycall_df["recommended_action"].isin(selected_actions)]
+            )
             call_cols = [
                 "buyer_id",
                 "buyer_name",
@@ -958,7 +1054,10 @@ def main_content() -> None:
                 "priority_score",
                 "recommended_action",
             ]
-            show_data_grid(happycall_df[call_cols].head(30), keep_input_order=True)
+            if display_happycall.empty:
+                st.caption("선택한 권장 액션에 해당하는 행이 없습니다. 필터를 해제하세요.")
+            else:
+                show_data_grid(display_happycall[call_cols].head(30), keep_input_order=True)
 
     with tab_margin:
         section_heading("가격-매출-마진 방어판", level=3)
