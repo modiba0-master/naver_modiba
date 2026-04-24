@@ -73,13 +73,30 @@ def _kst_anchor_business_date() -> date:
     return now_kst.date() + timedelta(days=1) if now_kst.hour >= 16 else now_kst.date()
 
 
+_OPTION_PRODUCT_JOIN_SEP = " — "
+
+
 def _option_product_label(product_name: object, option_name: object) -> str:
-    """집계·표시용 옵션상품명(상품명 + 옵션). 신규 코드 없이 문자열로만 통일."""
+    """집계 키: 상품명(+ 구분자 + 옵션명). 옵션 없으면 상품명만."""
     pn = str(product_name or "").strip()
     on = str(option_name or "").strip()
     if not on or on.lower() == "nan":
         return pn
-    return f"{pn} — {on}"
+    return f"{pn}{_OPTION_PRODUCT_JOIN_SEP}{on}"
+
+
+def _option_grid_display_text(key_label: object) -> str:
+    """그리드 표시: 옵션 있으면 옵션명만, 없으면 `상품명 (통합)`."""
+    s = str(key_label or "").strip()
+    if not s:
+        return ""
+    if _OPTION_PRODUCT_JOIN_SEP not in s:
+        return f"{s} (통합)"
+    left, _sep, right = s.partition(_OPTION_PRODUCT_JOIN_SEP)
+    left, right = left.strip(), right.strip()
+    if right and right.lower() != "nan":
+        return right
+    return f"{left} (통합)" if left else ""
 
 
 def _format_sales_date_label(d: date) -> str:
@@ -962,13 +979,15 @@ def main_content() -> None:
             st.markdown("#### 전주 대비 상승 옵션 Top5")
             rise_df = product_delta.head(5)[
                 ["option_product_label", "current_revenue", "revenue_diff", "revenue_diff_pct"]
-            ]
+            ].copy()
+            rise_df["option_product_label"] = rise_df["option_product_label"].map(_option_grid_display_text)
             show_data_grid(rise_df, keep_input_order=True)
         with fall_col:
             st.markdown("#### 전주 대비 하락 옵션 Top5")
             fall_df = product_delta.sort_values("revenue_diff").head(5)[
                 ["option_product_label", "current_revenue", "revenue_diff", "revenue_diff_pct"]
-            ]
+            ].copy()
+            fall_df["option_product_label"] = fall_df["option_product_label"].map(_option_grid_display_text)
             show_data_grid(fall_df, keep_input_order=True)
 
         action_msgs: list[str] = []
@@ -1006,7 +1025,11 @@ def main_content() -> None:
                 "단기·중기=로드된 영업일 중 최근 7일·30일(미만이면 가능한 만큼) 합계를 일수로 나눈 일평균 매출. "
                 "보합=(단기+중기)/2, 상한=max(단기,중기,오늘매출). 누적 기간이 짧으면 참고용입니다."
             )
-            show_data_grid(product_insight[insight_cols].head(20), keep_input_order=True)
+            insight_show = product_insight[insight_cols].head(20).copy()
+            insight_show["option_product_label"] = insight_show["option_product_label"].map(
+                _option_grid_display_text
+            )
+            show_data_grid(insight_show, keep_input_order=True)
 
     with tab_customer:
         section_heading("고객 이탈/해피콜 실행판", level=3)

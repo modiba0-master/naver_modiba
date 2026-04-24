@@ -22,7 +22,7 @@ COLUMN_MAP: dict[str, str] = {
     "total_sales": "매출",
     "product_name": "상품명",
     "option_name": "옵션상품명",
-    "option_product_label": "옵션상품명(통합)",
+    "option_product_label": "옵션상품명",
     "order_date": "주문일(달력)",
     "total_amount": "매출",
     "avg_ticket": "평균 객단가",
