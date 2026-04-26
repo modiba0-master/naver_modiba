@@ -140,3 +140,26 @@
 - 네이버 API 작업 시 기술지원 레포와 공식 문서 우선 참고:
   - https://github.com/commerce-api-naver/commerce-api
   - https://apicenter.commerce.naver.com/ko/basic/commerce-api
+
+## 대시보드 진행 메모 (2026-04-27, 새벽)
+- **오늘 반영한 것**
+  - KPI/요약에 배송 지표 카드 추가: 무료배송 주문, 유료배송 주문, 배송비매출.
+  - 마진 결과표에 배송 관련 컬럼 추가: 배송유형(집계), 원가적용규칙, 배송비매출, 유/무료 주문건수.
+  - `orders-raw` 응답 스키마/서비스에 배송비 필드 노출 추가:
+    - `delivery_fee_type`, `delivery_fee_amount`, `delivery_fee_discount_amount`, `jeju_island_extra_fee`.
+  - 마진 원가 규칙 정리:
+    - 유료배송: `원가 * 주문수량`
+    - 무료배송: `(원가 * 주문수량) + ((포장/부자재 + 풀필먼트) * 주문건수)`
+    - 묶음배송 기준으로 포장/풀필먼트는 주문건수당 1회 반영.
+- **현재 남아있는 이슈 (내일 1순위)**
+  - 실서비스 데이터에서 유료배송이 여전히 무료로 집계되는 케이스 존재.
+  - 사용자 확정 기준:
+    - DB의 `delivery_fee_amount == 0` → 무료배송
+    - DB의 `delivery_fee_amount >= 1000` → 유료배송
+  - 현재 코드도 위 기준으로 수정/배포했으나 결과가 기대와 다름.
+- **내일 시작 체크리스트**
+  1. `orders-raw` 실제 응답 샘플에서 `delivery_fee_amount` 값 분포 확인(0/1000+/NULL/문자열).
+  2. `_normalize_api_columns` 이후 `normalize_order_data` 직전/직후 컬럼명·dtype 확인(필드 누락/alias 충돌 점검).
+  3. `order_id` 단위 집계 전후(`is_paid_shipping`) 값 추적해 무료로 덮어써지는 지점 찾기.
+  4. 필요 시 판정 기준을 `delivery_fee_amount` 원본 보존 컬럼으로 분리(`raw_delivery_fee_amount`) 후 집계.
+  5. 검증 쿼리/표본 10건(무료 5, 유료 5)로 대시보드 결과 교차검증.
