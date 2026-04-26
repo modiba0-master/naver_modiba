@@ -435,12 +435,19 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     if "delivery_fee_type" not in df.columns:
         df["delivery_fee_type"] = ""
     df["delivery_fee_type"] = df["delivery_fee_type"].fillna("").astype(str)
+    raw_delivery_fee = pd.to_numeric(df["delivery_fee_amount"], errors="coerce").fillna(0)
     df["shipping_fee_revenue"] = (
-        df["delivery_fee_amount"] - df["delivery_fee_discount_amount"] + df["jeju_island_extra_fee"]
+        raw_delivery_fee - df["delivery_fee_discount_amount"] + df["jeju_island_extra_fee"]
     ).clip(lower=0)
-    fee_type_norm = df["delivery_fee_type"].str.lower()
-    paid_by_type = fee_type_norm.str.contains("paid|유료", regex=True)
-    df["is_paid_shipping"] = paid_by_type | (df["shipping_fee_revenue"] > 0)
+    fee_type_norm = df["delivery_fee_type"].str.lower().str.strip()
+    paid_by_type = fee_type_norm.str.contains(
+        r"paid|유료|charge|charged|prepaid|collect|착불|선불|수취인부담",
+        regex=True,
+    )
+    free_by_type = fee_type_norm.str.contains(r"free|무료", regex=True)
+    # type 값이 비정형/누락인 케이스를 고려해 금액 기반 fallback을 함께 사용한다.
+    paid_by_amount = (raw_delivery_fee > 0) | (df["shipping_fee_revenue"] > 0)
+    df["is_paid_shipping"] = paid_by_type | (~free_by_type & paid_by_amount)
     if "expected_settlement_amount" not in df.columns:
         df["expected_settlement_amount"] = 0
     df["expected_settlement_amount"] = pd.to_numeric(
@@ -1528,17 +1535,23 @@ def _build_margin_result_view(
             fulfillment_cost = float(pd.to_numeric(cost_row.get("fulfillment_cost"), errors="coerce") or 0.0)
             effective_from = pd.to_datetime(cost_row.get("effective_from"), errors="coerce")
             applied = True
-        # 배송유형별 원가 기준(1건 기준 단순 규칙):
-        # - 유료배송: 단위원가만 반영
-        # - 무료배송: 단위원가 + 포장/부자재 + 풀필먼트 반영
+        # 배송유형별 원가 기준:
+        # - 유료배송: 단위원가 * 주문수량
+        # - 무료배송: (단위원가 * 주문수량) + ((포장/부자재 + 풀필먼트) * 주문건수)
+        #   ※ 묶음배송 기준으로 포장/풀필먼트는 주문건수당 1회 반영
         is_paid_shipping = bool(row.get("is_paid_shipping", False))
+        order_quantity = float(row["order_quantity"])
+        order_count = float(row["order_count"])
         if is_paid_shipping:
-            total_unit_cost = unit_cost
+            estimated_cost = order_quantity * unit_cost
+            applied_unit_cost = unit_cost
+            excluded_fulfillment_cost = fulfillment_cost
             cost_rule_label = "유료(원가만)"
         else:
-            total_unit_cost = unit_cost + pack_cost + fulfillment_cost
+            estimated_cost = (order_quantity * unit_cost) + (order_count * (pack_cost + fulfillment_cost))
+            applied_unit_cost = unit_cost
+            excluded_fulfillment_cost = 0.0
             cost_rule_label = "무료(원가+포장+풀필)"
-        estimated_cost = float(row["order_quantity"]) * total_unit_cost
         margin_amount = float(row["net_revenue"]) - estimated_cost
         cost_rows.append(
             {
@@ -1556,8 +1569,8 @@ def _build_margin_result_view(
                 "estimated_cost": estimated_cost,
                 "margin_amount": margin_amount,
                 "cost_applied": applied,
-                "applied_unit_cost": total_unit_cost,
-                "excluded_fulfillment_cost": fulfillment_cost,
+                "applied_unit_cost": applied_unit_cost,
+                "excluded_fulfillment_cost": excluded_fulfillment_cost,
                 "latest_effective_from": effective_from,
             }
         )
