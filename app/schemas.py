@@ -75,6 +75,10 @@ class OrderRawItem(BaseModel):
     option_name: str
     quantity: int
     amount: int
+    delivery_fee_type: str = ""
+    delivery_fee_amount: int = 0
+    delivery_fee_discount_amount: int = 0
+    jeju_island_extra_fee: int = 0
     expected_settlement_amount: int = 0
     refund_amount: int = 0
     cancel_amount: int = 0

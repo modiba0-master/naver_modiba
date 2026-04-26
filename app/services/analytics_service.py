@@ -167,6 +167,10 @@ def get_orders_raw(
         item["option_name"] = row.option_name
         item["quantity"] = row.quantity
         item["amount"] = row.amount
+        item["delivery_fee_type"] = row.delivery_fee_type
+        item["delivery_fee_amount"] = row.delivery_fee_amount or 0
+        item["delivery_fee_discount_amount"] = row.delivery_fee_discount_amount or 0
+        item["jeju_island_extra_fee"] = row.jeju_island_extra_fee or 0
         item["expected_settlement_amount"] = row.expected_settlement_amount or 0
         item["refund_amount"] = row.refund_amount
         item["cancel_amount"] = row.cancel_amount
@@ -228,6 +232,10 @@ def get_claim_orders_raw(
             "option_name": row.option_name,
             "quantity": row.quantity,
             "amount": row.amount,
+            "delivery_fee_type": row.delivery_fee_type,
+            "delivery_fee_amount": row.delivery_fee_amount or 0,
+            "delivery_fee_discount_amount": row.delivery_fee_discount_amount or 0,
+            "jeju_island_extra_fee": row.jeju_island_extra_fee or 0,
             "expected_settlement_amount": row.expected_settlement_amount or 0,
             "refund_amount": row.refund_amount,
             "cancel_amount": row.cancel_amount,

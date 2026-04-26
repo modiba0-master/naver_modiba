@@ -56,6 +56,10 @@ REQUIRED_COLUMNS = [
     "option_name",
     "quantity",
     "amount",
+    "delivery_fee_type",
+    "delivery_fee_amount",
+    "delivery_fee_discount_amount",
+    "jeju_island_extra_fee",
 ]
 KST = ZoneInfo("Asia/Seoul")
 HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=20.0, pool=5.0)
@@ -423,6 +427,20 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+    df["delivery_fee_amount"] = pd.to_numeric(df.get("delivery_fee_amount", 0), errors="coerce").fillna(0)
+    df["delivery_fee_discount_amount"] = pd.to_numeric(
+        df.get("delivery_fee_discount_amount", 0), errors="coerce"
+    ).fillna(0)
+    df["jeju_island_extra_fee"] = pd.to_numeric(df.get("jeju_island_extra_fee", 0), errors="coerce").fillna(0)
+    if "delivery_fee_type" not in df.columns:
+        df["delivery_fee_type"] = ""
+    df["delivery_fee_type"] = df["delivery_fee_type"].fillna("").astype(str)
+    df["shipping_fee_revenue"] = (
+        df["delivery_fee_amount"] - df["delivery_fee_discount_amount"] + df["jeju_island_extra_fee"]
+    ).clip(lower=0)
+    fee_type_norm = df["delivery_fee_type"].str.lower()
+    paid_by_type = fee_type_norm.str.contains("paid|유료", regex=True)
+    df["is_paid_shipping"] = paid_by_type | (df["shipping_fee_revenue"] > 0)
     if "expected_settlement_amount" not in df.columns:
         df["expected_settlement_amount"] = 0
     df["expected_settlement_amount"] = pd.to_numeric(
@@ -544,14 +562,30 @@ def _daily_summary_from_orders(frame: pd.DataFrame, target_date: date) -> dict[s
             "order_quantity": 0.0,
             "sold_quantity": 0.0,
             "customer_count": 0.0,
+            "free_shipping_orders": 0.0,
+            "paid_shipping_orders": 0.0,
+            "shipping_fee_revenue": 0.0,
         }
     amount_col = "net_revenue" if "net_revenue" in day_df.columns else "amount"
+    if "is_paid_shipping" not in day_df.columns:
+        day_df["is_paid_shipping"] = False
+    if "shipping_fee_revenue" not in day_df.columns:
+        day_df["shipping_fee_revenue"] = 0
+    order_ship = (
+        day_df.groupby("order_id", as_index=False)
+        .agg(is_paid_shipping=("is_paid_shipping", "max"), shipping_fee_revenue=("shipping_fee_revenue", "max"))
+    )
+    paid_count = float(order_ship["is_paid_shipping"].sum())
+    free_count = float(max(0, len(order_ship) - int(paid_count)))
     return {
         "total_amount": float(pd.to_numeric(day_df[amount_col], errors="coerce").fillna(0).sum()),
         "order_count": float(day_df["order_id"].astype(str).replace("", pd.NA).dropna().nunique()),
         "order_quantity": float(pd.to_numeric(day_df["quantity"], errors="coerce").fillna(0).sum()),
         "sold_quantity": float(pd.to_numeric(day_df["real_quantity"], errors="coerce").fillna(0).sum()),
         "customer_count": float(day_df["buyer_id"].astype(str).replace("", pd.NA).dropna().nunique()),
+        "free_shipping_orders": free_count,
+        "paid_shipping_orders": paid_count,
+        "shipping_fee_revenue": float(pd.to_numeric(order_ship["shipping_fee_revenue"], errors="coerce").fillna(0).sum()),
     }
 
 
@@ -1455,15 +1489,23 @@ def _build_margin_result_view(
     o["stat_date"] = o["date"].dt.date
     o["order_quantity_num"] = pd.to_numeric(o["quantity"], errors="coerce").fillna(0)
     o["net_revenue_num"] = pd.to_numeric(o["net_revenue"], errors="coerce").fillna(0)
+    o["shipping_fee_revenue_num"] = pd.to_numeric(o.get("shipping_fee_revenue", 0), errors="coerce").fillna(0)
+    if "is_paid_shipping" not in o.columns:
+        o["is_paid_shipping"] = False
+    o["paid_order_id"] = o["order_id"].where(o["is_paid_shipping"], pd.NA)
+    o["free_order_id"] = o["order_id"].where(~o["is_paid_shipping"], pd.NA)
     day_rows = (
         o.groupby(
-            ["stat_date", "option_name_norm", "option_norm_key"],
+            ["stat_date", "option_name_norm", "option_norm_key", "is_paid_shipping"],
             as_index=False,
         )
         .agg(
             order_quantity=("order_quantity_num", "sum"),
             net_revenue=("net_revenue_num", "sum"),
             order_count=("order_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
+            shipping_fee_revenue=("shipping_fee_revenue_num", "sum"),
+            paid_shipping_orders=("paid_order_id", lambda s: s.dropna().astype(str).nunique()),
+            free_shipping_orders=("free_order_id", lambda s: s.dropna().astype(str).nunique()),
         )
         .sort_values(["option_norm_key", "stat_date"])
     )
@@ -1486,10 +1528,16 @@ def _build_margin_result_view(
             fulfillment_cost = float(pd.to_numeric(cost_row.get("fulfillment_cost"), errors="coerce") or 0.0)
             effective_from = pd.to_datetime(cost_row.get("effective_from"), errors="coerce")
             applied = True
-        # 마진 결과표 원가 기준:
-        # - 포함: 단위원가 + 포장/부자재 (주문수량 1개 기준)
-        # - 제외: 풀필먼트/택배비
-        total_unit_cost = unit_cost + pack_cost
+        # 배송유형별 원가 기준(1건 기준 단순 규칙):
+        # - 유료배송: 단위원가만 반영
+        # - 무료배송: 단위원가 + 포장/부자재 + 풀필먼트 반영
+        is_paid_shipping = bool(row.get("is_paid_shipping", False))
+        if is_paid_shipping:
+            total_unit_cost = unit_cost
+            cost_rule_label = "유료(원가만)"
+        else:
+            total_unit_cost = unit_cost + pack_cost + fulfillment_cost
+            cost_rule_label = "무료(원가+포장+풀필)"
         estimated_cost = float(row["order_quantity"]) * total_unit_cost
         margin_amount = float(row["net_revenue"]) - estimated_cost
         cost_rows.append(
@@ -1500,6 +1548,11 @@ def _build_margin_result_view(
                 "net_revenue": float(row["net_revenue"]),
                 "order_quantity": float(row["order_quantity"]),
                 "order_count": int(row["order_count"]),
+                "shipping_fee_revenue": float(row["shipping_fee_revenue"]),
+                "paid_shipping_orders": int(row["paid_shipping_orders"]),
+                "free_shipping_orders": int(row["free_shipping_orders"]),
+                "is_paid_shipping": is_paid_shipping,
+                "cost_rule_label": cost_rule_label,
                 "estimated_cost": estimated_cost,
                 "margin_amount": margin_amount,
                 "cost_applied": applied,
@@ -1518,12 +1571,16 @@ def _build_margin_result_view(
             net_revenue=("net_revenue", "sum"),
             order_quantity=("order_quantity", "sum"),
             order_count=("order_count", "sum"),
+            shipping_fee_revenue=("shipping_fee_revenue", "sum"),
+            paid_shipping_orders=("paid_shipping_orders", "sum"),
+            free_shipping_orders=("free_shipping_orders", "sum"),
             estimated_cost=("estimated_cost", "sum"),
             margin_amount=("margin_amount", "sum"),
             missing_cost_days=("cost_applied", lambda s: int((~pd.Series(s).fillna(False)).sum())),
             latest_effective_from=("latest_effective_from", "max"),
             applied_unit_cost=("applied_unit_cost", "max"),
             excluded_fulfillment_cost=("excluded_fulfillment_cost", "max"),
+            cost_rule_label=("cost_rule_label", lambda s: "혼합" if len(set(pd.Series(s).dropna().astype(str))) > 1 else pd.Series(s).dropna().astype(str).iloc[0] if len(pd.Series(s).dropna()) > 0 else ""),
         )
     )
     out["margin_rate_pct"] = out.apply(
@@ -1532,6 +1589,12 @@ def _build_margin_result_view(
     )
     out["cost_apply_status"] = out["missing_cost_days"].map(
         lambda v: "원가적용완료" if int(v) == 0 else ("원가없음" if int(v) > 0 else "확인필요")
+    )
+    out["delivery_type_mix"] = out.apply(
+        lambda r: "혼합"
+        if int(r["paid_shipping_orders"]) > 0 and int(r["free_shipping_orders"]) > 0
+        else ("유료배송" if int(r["paid_shipping_orders"]) > 0 else "무료배송"),
+        axis=1,
     )
     out = out.sort_values(["margin_rate_pct", "net_revenue"], ascending=[True, False])
     return out
@@ -1727,6 +1790,22 @@ def main_content() -> None:
             "고객수",
             f"{int(report_summary['customer_count']):,}",
             _delta_text(report_summary["customer_count"], compare_summary["customer_count"]),
+        )
+        sm1, sm2, sm3 = st.columns(3)
+        sm1.metric(
+            "무료배송 주문",
+            f"{int(report_summary['free_shipping_orders']):,}건",
+            _delta_text(report_summary["free_shipping_orders"], compare_summary["free_shipping_orders"]),
+        )
+        sm2.metric(
+            "유료배송 주문",
+            f"{int(report_summary['paid_shipping_orders']):,}건",
+            _delta_text(report_summary["paid_shipping_orders"], compare_summary["paid_shipping_orders"]),
+        )
+        sm3.metric(
+            "배송비매출",
+            f"{report_summary['shipping_fee_revenue']:,.0f}원",
+            _delta_text(report_summary["shipping_fee_revenue"], compare_summary["shipping_fee_revenue"]),
         )
         st.caption(
             f"기준일 {summary_report_date} · 전주 비교일 {summary_compare_date} · "
@@ -2284,6 +2363,11 @@ def main_content() -> None:
             margin_show["option_name"] = margin_show["option_name"].map(_option_name_display)
             margin_cols = [
                 "option_name",
+                "delivery_type_mix",
+                "cost_rule_label",
+                "shipping_fee_revenue",
+                "paid_shipping_orders",
+                "free_shipping_orders",
                 "order_count",
                 "order_quantity",
                 "net_revenue",
@@ -2350,6 +2434,28 @@ def main_content() -> None:
         )
         settlement_diff_amount = expected_settlement_total - float(whole["total_amount"])
 
+        def _shipping_metrics(df: pd.DataFrame) -> dict[str, float]:
+            if df.empty:
+                return {"free": 0.0, "paid": 0.0, "shipping_revenue": 0.0}
+            work = df.copy()
+            if "is_paid_shipping" not in work.columns:
+                work["is_paid_shipping"] = False
+            if "shipping_fee_revenue" not in work.columns:
+                work["shipping_fee_revenue"] = 0
+            grouped = work.groupby("order_id", as_index=False).agg(
+                is_paid_shipping=("is_paid_shipping", "max"),
+                shipping_fee_revenue=("shipping_fee_revenue", "max"),
+            )
+            paid = float(grouped["is_paid_shipping"].sum())
+            free = float(max(0, len(grouped) - int(paid)))
+            shipping_revenue = float(
+                pd.to_numeric(grouped["shipping_fee_revenue"], errors="coerce").fillna(0).sum()
+            )
+            return {"free": free, "paid": paid, "shipping_revenue": shipping_revenue}
+
+        shipping_now = _shipping_metrics(kpi_filtered_df)
+        shipping_prev = _shipping_metrics(prev_df)
+
         def _prev_delta(curr: float, base: float) -> str | None:
             if not compare_prev:
                 return None
@@ -2402,6 +2508,22 @@ def main_content() -> None:
                 "일수",
                 f"{period_days}일",
                 None,
+            )
+            r3a, r3b, r3c = st.columns(3)
+            r3a.metric(
+                f"무료배송 주문 ({compare_info})",
+                f"{int(shipping_now['free']):,}건",
+                _prev_delta(shipping_now["free"], shipping_prev["free"]),
+            )
+            r3b.metric(
+                f"유료배송 주문 ({compare_info})",
+                f"{int(shipping_now['paid']):,}건",
+                _prev_delta(shipping_now["paid"], shipping_prev["paid"]),
+            )
+            r3c.metric(
+                f"배송비매출 ({compare_info})",
+                f"{shipping_now['shipping_revenue']:,.0f}원",
+                _prev_delta(shipping_now["shipping_revenue"], shipping_prev["shipping_revenue"]),
             )
 
         st.markdown("")
