@@ -101,6 +101,12 @@ def _option_grid_display_text(key_label: object) -> str:
     return f"{left} (통합)" if left else ""
 
 
+def _option_name_display(option_name: object) -> str:
+    """옵션명 단독 표시(비어 있으면 대체 문구)."""
+    s = str(option_name or "").strip()
+    return s if s else "(옵션없음)"
+
+
 def _format_sales_date_label(d: date) -> str:
     """매출 집계일(달력) + 요일 — KPI 일자 행에 통일 표기."""
     return f"{d.isoformat()} ({_WEEKDAY_KO[d.weekday()]})"
@@ -1168,6 +1174,93 @@ def save_option_cost_history(
         db.close()
 
 
+def seed_zero_option_cost_history(
+    frame: pd.DataFrame,
+    *,
+    start_date: date,
+    end_date: date,
+    effective_from: date,
+) -> tuple[int, int]:
+    """조회 구간 주문 옵션을 0원가로 초기 생성한다. (신규 건수, 기존 건수)"""
+    if frame.empty:
+        return 0, 0
+    scoped = frame[(frame["date"].dt.date >= start_date) & (frame["date"].dt.date <= end_date)].copy()
+    if scoped.empty:
+        return 0, 0
+    options = (
+        scoped.assign(option_name_norm=scoped["option_name"].fillna("").astype(str))
+        .groupby(["product_name", "option_name_norm"], as_index=False)
+        .size()
+    )
+    if options.empty:
+        return 0, 0
+    candidates = [
+        (str(row["product_name"]).strip(), str(row["option_name_norm"]).strip())
+        for _, row in options.iterrows()
+    ]
+    db = SessionLocal()
+    try:
+        existing_rows = db.execute(
+            text(
+                """
+                SELECT product_name, COALESCE(option_name, '') AS option_name
+                FROM product_option_cost_master
+                WHERE effective_from = :effective_from
+                """
+            ),
+            {"effective_from": effective_from},
+        ).mappings().all()
+        existing_keys = {(str(r["product_name"]).strip(), str(r["option_name"]).strip()) for r in existing_rows}
+        new_keys = [k for k in candidates if k not in existing_keys]
+        if not new_keys:
+            return 0, len(candidates)
+        db.execute(
+            text(
+                """
+                INSERT INTO product_option_cost_master (
+                    product_name,
+                    option_name,
+                    unit_cost,
+                    pack_cost,
+                    fulfillment_cost,
+                    default_shipping_cost,
+                    effective_from,
+                    effective_to,
+                    is_active,
+                    note
+                )
+                VALUES (
+                    :product_name,
+                    :option_name,
+                    0,
+                    0,
+                    0,
+                    0,
+                    :effective_from,
+                    NULL,
+                    1,
+                    :note
+                )
+                ON DUPLICATE KEY UPDATE
+                    note = note
+                """
+            ),
+            [
+                {
+                    "product_name": product_name,
+                    "option_name": option_name,
+                    "effective_from": effective_from,
+                    "note": "초기생성(0원가)",
+                }
+                for product_name, option_name in new_keys
+            ],
+        )
+        db.commit()
+        return len(new_keys), len(candidates) - len(new_keys)
+    finally:
+        db.close()
+
+
 def _effective_cost_row(
     costs: pd.DataFrame,
     *,
@@ -1303,6 +1396,7 @@ def _build_margin_result_view(
             {
                 "stat_date": stat_date,
                 "option_product_label": row["option_product_label"],
+                "option_name": _option_name_display(option_name),
                 "net_revenue": float(row["net_revenue"]),
                 "order_quantity": float(row["order_quantity"]),
                 "order_count": int(row["order_count"]),
@@ -1319,6 +1413,7 @@ def _build_margin_result_view(
     out = (
         calc.groupby("option_product_label", as_index=False)
         .agg(
+            option_name=("option_name", "first"),
             net_revenue=("net_revenue", "sum"),
             order_quantity=("order_quantity", "sum"),
             order_count=("order_count", "sum"),
@@ -1914,13 +2009,49 @@ def main_content() -> None:
             f"주문 발생 옵션 기준 원가 관리 · 조회구간 {margin_start_date}~{margin_base_date} "
             "(주문일 시점 유효 원가 적용)"
         )
+        init_col1, init_col2 = st.columns([2, 6])
+        with init_col1:
+            bootstrap_submitted = st.button(
+                "조회구간 옵션 0원가 초기생성",
+                key="margin_zero_cost_bootstrap_btn",
+                help="현재 조회구간 주문 옵션 중 원가 마스터에 없는 항목을 0원가로 초기 등록합니다.",
+            )
+        with init_col2:
+            st.caption(
+                "초기값은 unit/pack/fulfillment 모두 0으로 저장됩니다. "
+                "생성 후 아래 원가 입력 위젯에서 실제 원가로 수정하세요."
+            )
+        if bootstrap_submitted:
+            try:
+                inserted_count, existing_count = seed_zero_option_cost_history(
+                    order_df,
+                    start_date=margin_start_date,
+                    end_date=margin_base_date,
+                    effective_from=margin_base_date,
+                )
+                load_option_cost_history.clear()
+                if inserted_count > 0:
+                    st.success(
+                        f"초기 0원가 데이터 {inserted_count}건을 생성했습니다. "
+                        f"(기존 {existing_count}건)"
+                    )
+                else:
+                    st.info("조회구간 옵션은 이미 초기 데이터가 준비되어 있습니다.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"초기 데이터 생성 중 오류가 발생했습니다: {exc}")
 
         section_heading("원가 미입력 옵션 큐", level=3)
         missing_queue_df = _build_missing_option_queue(order_df, cost_history_df, as_of_date=margin_base_date)
         if missing_queue_df.empty:
             st.caption("미입력 옵션이 없습니다. 새로 주문된 옵션도 자동으로 이 목록에 나타납니다.")
         else:
-            show_data_grid(missing_queue_df.head(50), keep_input_order=True)
+            missing_show = missing_queue_df.head(50).copy()
+            missing_show["option_name"] = missing_show["option_name"].map(_option_name_display)
+            missing_show = missing_show[
+                ["option_name", "recent_order_date", "recent_7d_revenue", "cost_apply_status"]
+            ]
+            show_data_grid(missing_show, keep_input_order=True)
 
         section_heading("옵션 원가 입력", level=3)
         option_master = (
@@ -1928,6 +2059,7 @@ def main_content() -> None:
             .agg(recent_order_date=("date", lambda s: pd.to_datetime(s, errors="coerce").max()))
             .sort_values("recent_order_date", ascending=False)
         )
+        option_master["option_name_display"] = option_master["option_name"].map(_option_name_display)
         option_choices = option_master["option_product_label"].dropna().astype(str).unique().tolist()
         if not option_choices:
             st.caption("원가 입력 대상 옵션이 없습니다.")
@@ -1941,11 +2073,15 @@ def main_content() -> None:
                     options=option_choices,
                     index=max(0, option_choices.index(default_option)) if default_option in option_choices else 0,
                     key="margin_cost_option_select",
+                    format_func=lambda key: str(
+                        option_master.loc[
+                            option_master["option_product_label"] == key, "option_name_display"
+                        ].iloc[0]
+                    ),
                 )
                 selected_row = option_master[option_master["option_product_label"] == selected_option_label].iloc[0]
                 st.caption(
-                    f"매핑: 상품명 `{selected_row['product_name']}` / 옵션명 "
-                    f"`{str(selected_row['option_name'] or '').strip()}`"
+                    f"선택 옵션상품명: `{_option_name_display(selected_row['option_name'])}`"
                 )
                 input_col1, input_col2, input_col3 = st.columns(3)
                 with input_col1:
@@ -1987,12 +2123,9 @@ def main_content() -> None:
         if not cost_history_df.empty:
             section_heading("옵션 원가 이력(최근)", level=3)
             history_show = cost_history_df.copy()
-            history_show["option_product_label"] = [
-                _option_product_label(a, b) for a, b in zip(history_show["product_name"], history_show["option_name"])
-            ]
-            history_show["option_product_label"] = history_show["option_product_label"].map(_option_grid_display_text)
+            history_show["option_name"] = history_show["option_name"].map(_option_name_display)
             history_cols = [
-                "option_product_label",
+                "option_name",
                 "unit_cost",
                 "pack_cost",
                 "fulfillment_cost",
@@ -2027,9 +2160,9 @@ def main_content() -> None:
             if no_cost_count > 0:
                 st.warning("일부 옵션은 유효 원가가 없어 마진이 과대 계산될 수 있습니다. 미입력 옵션 큐를 확인하세요.")
             margin_show = margin_view_df.copy()
-            margin_show["option_product_label"] = margin_show["option_product_label"].map(_option_grid_display_text)
+            margin_show["option_name"] = margin_show["option_name"].map(_option_name_display)
             margin_cols = [
-                "option_product_label",
+                "option_name",
                 "order_count",
                 "order_quantity",
                 "net_revenue",
