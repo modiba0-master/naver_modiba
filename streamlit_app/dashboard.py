@@ -1270,18 +1270,19 @@ def _effective_cost_row(
 ) -> pd.Series | None:
     if costs.empty:
         return None
+    stat_ts = pd.Timestamp(stat_date)
     c = costs[
         (costs["product_name"].astype(str) == str(product_name))
         & (costs["option_name"].astype(str) == str(option_name))
     ].copy()
     if c.empty:
         return None
-    c["effective_from"] = pd.to_datetime(c["effective_from"], errors="coerce").dt.date
-    c["effective_to"] = pd.to_datetime(c["effective_to"], errors="coerce").dt.date
+    c["effective_from"] = pd.to_datetime(c["effective_from"], errors="coerce")
+    c["effective_to"] = pd.to_datetime(c["effective_to"], errors="coerce")
     c = c[
         c["effective_from"].notna()
-        & (c["effective_from"] <= stat_date)
-        & ((c["effective_to"].isna()) | (c["effective_to"] >= stat_date))
+        & (c["effective_from"] <= stat_ts)
+        & ((c["effective_to"].isna()) | (c["effective_to"] >= stat_ts))
     ]
     if c.empty:
         return None
