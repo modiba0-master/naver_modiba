@@ -1486,7 +1486,10 @@ def _build_margin_result_view(
             fulfillment_cost = float(pd.to_numeric(cost_row.get("fulfillment_cost"), errors="coerce") or 0.0)
             effective_from = pd.to_datetime(cost_row.get("effective_from"), errors="coerce")
             applied = True
-        total_unit_cost = unit_cost + pack_cost + fulfillment_cost
+        # 마진 결과표 원가 기준:
+        # - 포함: 단위원가 + 포장/부자재 (주문수량 1개 기준)
+        # - 제외: 풀필먼트/택배비
+        total_unit_cost = unit_cost + pack_cost
         estimated_cost = float(row["order_quantity"]) * total_unit_cost
         margin_amount = float(row["net_revenue"]) - estimated_cost
         cost_rows.append(
@@ -1501,6 +1504,7 @@ def _build_margin_result_view(
                 "margin_amount": margin_amount,
                 "cost_applied": applied,
                 "applied_unit_cost": total_unit_cost,
+                "excluded_fulfillment_cost": fulfillment_cost,
                 "latest_effective_from": effective_from,
             }
         )
@@ -1519,6 +1523,7 @@ def _build_margin_result_view(
             missing_cost_days=("cost_applied", lambda s: int((~pd.Series(s).fillna(False)).sum())),
             latest_effective_from=("latest_effective_from", "max"),
             applied_unit_cost=("applied_unit_cost", "max"),
+            excluded_fulfillment_cost=("excluded_fulfillment_cost", "max"),
         )
     )
     out["margin_rate_pct"] = out.apply(
@@ -2095,26 +2100,28 @@ def main_content() -> None:
         cost_history_df = load_option_cost_history()
         if migration_msg:
             st.info(migration_msg)
-        margin_base_col, margin_period_col = st.columns([2, 2])
-        with margin_base_col:
-            margin_base_date = st.date_input(
-                "마진 조회 기준일",
+        margin_start_col, margin_end_col = st.columns(2)
+        with margin_start_col:
+            margin_start_date = st.date_input(
+                "마진 조회 시작일",
                 value=report_date,
                 min_value=available_dates[0] if available_dates else report_date,
                 max_value=available_dates[-1] if available_dates else report_date,
-                key="margin_base_date",
+                key="margin_start_date",
             )
-        with margin_period_col:
-            margin_window_days = st.selectbox(
-                "조회 기간",
-                options=[7, 30],
-                index=1,
-                key="margin_window_days",
-                format_func=lambda d: f"최근 {d}일",
+        with margin_end_col:
+            margin_end_date = st.date_input(
+                "마진 조회 종료일",
+                value=report_date,
+                min_value=available_dates[0] if available_dates else report_date,
+                max_value=available_dates[-1] if available_dates else report_date,
+                key="margin_end_date",
             )
-        margin_start_date = margin_base_date - timedelta(days=int(margin_window_days) - 1)
+        if margin_start_date > margin_end_date:
+            st.warning("마진 조회 시작일이 종료일보다 늦습니다. 날짜를 다시 선택해 주세요.")
+            st.stop()
         st.caption(
-            f"주문 발생 옵션 기준 원가 관리 · 조회구간 {margin_start_date}~{margin_base_date} "
+            f"주문 발생 옵션 기준 원가 관리 · 조회구간 {margin_start_date}~{margin_end_date} "
             "(주문일 시점 유효 원가 적용)"
         )
         init_col1, init_col2 = st.columns([2, 6])
@@ -2134,8 +2141,8 @@ def main_content() -> None:
                 inserted_count, existing_count = seed_zero_option_cost_history(
                     order_df,
                     start_date=margin_start_date,
-                    end_date=margin_base_date,
-                    effective_from=margin_base_date,
+                    end_date=margin_end_date,
+                    effective_from=margin_end_date,
                 )
                 load_option_cost_history.clear()
                 if inserted_count > 0:
@@ -2150,7 +2157,7 @@ def main_content() -> None:
                 st.error(f"초기 데이터 생성 중 오류가 발생했습니다: {exc}")
 
         section_heading("원가 미입력 옵션 큐", level=3)
-        missing_queue_df = _build_missing_option_queue(order_df, cost_history_df, as_of_date=margin_base_date)
+        missing_queue_df = _build_missing_option_queue(order_df, cost_history_df, as_of_date=margin_end_date)
         if missing_queue_df.empty:
             st.caption("미입력 옵션이 없습니다. 새로 주문된 옵션도 자동으로 이 목록에 나타납니다.")
         else:
@@ -2204,7 +2211,7 @@ def main_content() -> None:
                 with effective_col:
                     input_effective_from = st.date_input(
                         "원가 적용일",
-                        value=margin_base_date,
+                        value=margin_end_date,
                         key="margin_cost_effective_from",
                     )
                 with note_col:
@@ -2251,11 +2258,15 @@ def main_content() -> None:
             order_df,
             cost_history_df,
             start_date=margin_start_date,
-            end_date=margin_base_date,
+            end_date=margin_end_date,
         )
         if margin_view_df.empty:
             st.caption("조회 구간에 마진 계산 대상 데이터가 없습니다.")
         else:
+            st.caption(
+                "원가 계산식: 주문수량 × (단위원가 + 포장/부자재). "
+                "풀필먼트/택배비는 마진 결과표 원가 계산에서 제외됩니다."
+            )
             total_revenue = float(pd.to_numeric(margin_view_df["net_revenue"], errors="coerce").fillna(0).sum())
             total_cost = float(pd.to_numeric(margin_view_df["estimated_cost"], errors="coerce").fillna(0).sum())
             total_margin = float(pd.to_numeric(margin_view_df["margin_amount"], errors="coerce").fillna(0).sum())
