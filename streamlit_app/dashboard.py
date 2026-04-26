@@ -1051,6 +1051,295 @@ def load_option_margin_snapshot(target_date: date) -> pd.DataFrame:
         db.close()
 
 
+@st.cache_data(ttl=120)
+def load_option_cost_history() -> pd.DataFrame:
+    """옵션 원가 이력 로드 (테이블 미생성 시 빈 결과)."""
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                """
+                SELECT
+                    product_name,
+                    COALESCE(option_name, '') AS option_name,
+                    option_code,
+                    unit_cost,
+                    pack_cost,
+                    fulfillment_cost,
+                    default_shipping_cost,
+                    effective_from,
+                    effective_to,
+                    is_active,
+                    note,
+                    updated_at
+                FROM product_option_cost_master
+                WHERE is_active = 1
+                ORDER BY product_name, option_name, effective_from DESC
+                """
+            )
+        ).mappings().all()
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        db.close()
+
+
+def save_option_cost_history(
+    *,
+    product_name: str,
+    option_name: str,
+    effective_from: date,
+    unit_cost: int,
+    pack_cost: int = 0,
+    fulfillment_cost: int = 0,
+    note: str = "",
+) -> str:
+    """옵션 원가 이력 저장(동일 옵션/적용일 존재 시 갱신)."""
+    db = SessionLocal()
+    try:
+        existing = db.execute(
+            text(
+                """
+                SELECT 1
+                FROM product_option_cost_master
+                WHERE product_name = :product_name
+                  AND option_name = :option_name
+                  AND effective_from = :effective_from
+                LIMIT 1
+                """
+            ),
+            {
+                "product_name": product_name.strip(),
+                "option_name": option_name.strip(),
+                "effective_from": effective_from,
+            },
+        ).first()
+        db.execute(
+            text(
+                """
+                INSERT INTO product_option_cost_master (
+                    product_name,
+                    option_name,
+                    unit_cost,
+                    pack_cost,
+                    fulfillment_cost,
+                    default_shipping_cost,
+                    effective_from,
+                    effective_to,
+                    is_active,
+                    note
+                )
+                VALUES (
+                    :product_name,
+                    :option_name,
+                    :unit_cost,
+                    :pack_cost,
+                    :fulfillment_cost,
+                    0,
+                    :effective_from,
+                    NULL,
+                    1,
+                    :note
+                )
+                ON DUPLICATE KEY UPDATE
+                    unit_cost = VALUES(unit_cost),
+                    pack_cost = VALUES(pack_cost),
+                    fulfillment_cost = VALUES(fulfillment_cost),
+                    default_shipping_cost = VALUES(default_shipping_cost),
+                    note = VALUES(note),
+                    is_active = 1,
+                    effective_to = NULL
+                """
+            ),
+            {
+                "product_name": product_name.strip(),
+                "option_name": option_name.strip(),
+                "effective_from": effective_from,
+                "unit_cost": int(unit_cost),
+                "pack_cost": int(pack_cost),
+                "fulfillment_cost": int(fulfillment_cost),
+                "note": note.strip(),
+            },
+        )
+        db.commit()
+        return "updated" if existing else "created"
+    finally:
+        db.close()
+
+
+def _effective_cost_row(
+    costs: pd.DataFrame,
+    *,
+    product_name: str,
+    option_name: str,
+    stat_date: date,
+) -> pd.Series | None:
+    if costs.empty:
+        return None
+    c = costs[
+        (costs["product_name"].astype(str) == str(product_name))
+        & (costs["option_name"].astype(str) == str(option_name))
+    ].copy()
+    if c.empty:
+        return None
+    c["effective_from"] = pd.to_datetime(c["effective_from"], errors="coerce").dt.date
+    c["effective_to"] = pd.to_datetime(c["effective_to"], errors="coerce").dt.date
+    c = c[
+        c["effective_from"].notna()
+        & (c["effective_from"] <= stat_date)
+        & ((c["effective_to"].isna()) | (c["effective_to"] >= stat_date))
+    ]
+    if c.empty:
+        return None
+    c = c.sort_values(["effective_from", "updated_at"], ascending=[False, False])
+    return c.iloc[0]
+
+
+def _build_missing_option_queue(
+    frame: pd.DataFrame,
+    costs: pd.DataFrame,
+    *,
+    as_of_date: date,
+) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+    o = frame.copy()
+    o = o[o["date"].dt.date <= as_of_date]
+    if o.empty:
+        return pd.DataFrame()
+    if "option_product_label" not in o.columns:
+        o["option_product_label"] = [_option_product_label(a, b) for a, b in zip(o["product_name"], o["option_name"])]
+    o["option_name_norm"] = o["option_name"].fillna("").astype(str)
+    options = (
+        o.groupby(["product_name", "option_name_norm", "option_product_label"], as_index=False)
+        .agg(
+            recent_order_date=("date", lambda s: pd.to_datetime(s, errors="coerce").max()),
+            recent_7d_revenue=(
+                "net_revenue",
+                lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum(),
+            ),
+        )
+    )
+    if not costs.empty:
+        c = costs.copy()
+        c["effective_from"] = pd.to_datetime(c["effective_from"], errors="coerce").dt.date
+        covered = c[c["effective_from"].notna() & (c["effective_from"] <= as_of_date)][
+            ["product_name", "option_name"]
+        ].drop_duplicates()
+        covered["covered"] = 1
+        options = options.merge(
+            covered,
+            left_on=["product_name", "option_name_norm"],
+            right_on=["product_name", "option_name"],
+            how="left",
+        )
+    else:
+        options["covered"] = pd.NA
+    options["cost_apply_status"] = options["covered"].map(lambda x: "원가입력완료" if x == 1 else "원가미입력")
+    missing = options[options["cost_apply_status"] == "원가미입력"].copy()
+    if missing.empty:
+        return missing
+    missing["recent_order_date"] = pd.to_datetime(missing["recent_order_date"], errors="coerce").dt.date
+    return missing[
+        ["option_product_label", "product_name", "option_name_norm", "recent_order_date", "recent_7d_revenue", "cost_apply_status"]
+    ].rename(columns={"option_name_norm": "option_name"}).sort_values(
+        ["recent_7d_revenue", "recent_order_date"], ascending=[False, False]
+    )
+
+
+def _build_margin_result_view(
+    frame: pd.DataFrame,
+    costs: pd.DataFrame,
+    *,
+    start_date: date,
+    end_date: date,
+) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+    o = frame[(frame["date"].dt.date >= start_date) & (frame["date"].dt.date <= end_date)].copy()
+    if o.empty:
+        return pd.DataFrame()
+    if "option_product_label" not in o.columns:
+        o["option_product_label"] = [_option_product_label(a, b) for a, b in zip(o["product_name"], o["option_name"])]
+    o["option_name_norm"] = o["option_name"].fillna("").astype(str)
+    o["stat_date"] = o["date"].dt.date
+    o["order_quantity_num"] = pd.to_numeric(o["quantity"], errors="coerce").fillna(0)
+    o["net_revenue_num"] = pd.to_numeric(o["net_revenue"], errors="coerce").fillna(0)
+    day_rows = (
+        o.groupby(
+            ["stat_date", "product_name", "option_name_norm", "option_product_label"],
+            as_index=False,
+        )
+        .agg(
+            order_quantity=("order_quantity_num", "sum"),
+            net_revenue=("net_revenue_num", "sum"),
+            order_count=("order_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
+        )
+        .sort_values(["option_product_label", "stat_date"])
+    )
+    cost_rows: list[dict[str, object]] = []
+    for _, row in day_rows.iterrows():
+        stat_date = row["stat_date"]
+        product_name = str(row["product_name"])
+        option_name = str(row["option_name_norm"])
+        cost_row = _effective_cost_row(costs, product_name=product_name, option_name=option_name, stat_date=stat_date)
+        if cost_row is None:
+            unit_cost = 0.0
+            pack_cost = 0.0
+            fulfillment_cost = 0.0
+            effective_from = pd.NaT
+            applied = False
+        else:
+            unit_cost = float(pd.to_numeric(cost_row.get("unit_cost"), errors="coerce") or 0.0)
+            pack_cost = float(pd.to_numeric(cost_row.get("pack_cost"), errors="coerce") or 0.0)
+            fulfillment_cost = float(pd.to_numeric(cost_row.get("fulfillment_cost"), errors="coerce") or 0.0)
+            effective_from = pd.to_datetime(cost_row.get("effective_from"), errors="coerce")
+            applied = True
+        total_unit_cost = unit_cost + pack_cost + fulfillment_cost
+        estimated_cost = float(row["order_quantity"]) * total_unit_cost
+        margin_amount = float(row["net_revenue"]) - estimated_cost
+        cost_rows.append(
+            {
+                "stat_date": stat_date,
+                "option_product_label": row["option_product_label"],
+                "net_revenue": float(row["net_revenue"]),
+                "order_quantity": float(row["order_quantity"]),
+                "order_count": int(row["order_count"]),
+                "estimated_cost": estimated_cost,
+                "margin_amount": margin_amount,
+                "cost_applied": applied,
+                "applied_unit_cost": total_unit_cost,
+                "latest_effective_from": effective_from,
+            }
+        )
+    calc = pd.DataFrame(cost_rows)
+    if calc.empty:
+        return calc
+    out = (
+        calc.groupby("option_product_label", as_index=False)
+        .agg(
+            net_revenue=("net_revenue", "sum"),
+            order_quantity=("order_quantity", "sum"),
+            order_count=("order_count", "sum"),
+            estimated_cost=("estimated_cost", "sum"),
+            margin_amount=("margin_amount", "sum"),
+            missing_cost_days=("cost_applied", lambda s: int((~pd.Series(s).fillna(False)).sum())),
+            latest_effective_from=("latest_effective_from", "max"),
+            applied_unit_cost=("applied_unit_cost", "max"),
+        )
+    )
+    out["margin_rate_pct"] = out.apply(
+        lambda r: (float(r["margin_amount"]) / float(r["net_revenue"]) * 100.0) if float(r["net_revenue"]) > 0 else 0.0,
+        axis=1,
+    )
+    out["cost_apply_status"] = out["missing_cost_days"].map(
+        lambda v: "원가적용완료" if int(v) == 0 else ("원가없음" if int(v) > 0 else "확인필요")
+    )
+    out = out.sort_values(["margin_rate_pct", "net_revenue"], ascending=[True, False])
+    return out
+
+
 st.set_page_config(page_title="네이버 모디바 대시보드", layout="wide")
 
 
@@ -1190,7 +1479,6 @@ def main_content() -> None:
     report_date = default_end
     compare_date = report_date - timedelta(days=7)
     happycall_df = _build_happycall_candidates(order_df, report_date)
-    margin_df = load_option_margin_snapshot(report_date)
 
     def _delta_text(curr: float, prev: float) -> str:
         if prev == 0:
@@ -1603,74 +1891,156 @@ def main_content() -> None:
 
     with tab_margin:
         section_heading("가격-매출-마진 방어판", level=3)
-        if margin_df.empty:
-            st.caption(
-                "옵션 마진 스냅샷 데이터가 없습니다. "
-                "`create_margin_management_tables.sql` 실행 후 "
-                "`upsert_option_margin_daily.sql` 배치를 먼저 수행해 주세요."
+        cost_history_df = load_option_cost_history()
+        margin_base_col, margin_period_col = st.columns([2, 2])
+        with margin_base_col:
+            margin_base_date = st.date_input(
+                "마진 조회 기준일",
+                value=report_date,
+                min_value=available_dates[0] if available_dates else report_date,
+                max_value=available_dates[-1] if available_dates else report_date,
+                key="margin_base_date",
             )
+        with margin_period_col:
+            margin_window_days = st.selectbox(
+                "조회 기간",
+                options=[7, 30],
+                index=1,
+                key="margin_window_days",
+                format_func=lambda d: f"최근 {d}일",
+            )
+        margin_start_date = margin_base_date - timedelta(days=int(margin_window_days) - 1)
+        st.caption(
+            f"주문 발생 옵션 기준 원가 관리 · 조회구간 {margin_start_date}~{margin_base_date} "
+            "(주문일 시점 유효 원가 적용)"
+        )
+
+        section_heading("원가 미입력 옵션 큐", level=3)
+        missing_queue_df = _build_missing_option_queue(order_df, cost_history_df, as_of_date=margin_base_date)
+        if missing_queue_df.empty:
+            st.caption("미입력 옵션이 없습니다. 새로 주문된 옵션도 자동으로 이 목록에 나타납니다.")
         else:
-            threshold_col1, threshold_col2 = st.columns([2, 6])
-            with threshold_col1:
-                margin_threshold_pct = st.number_input(
-                    "마진율 임계치(%)",
-                    min_value=-100.0,
-                    max_value=100.0,
-                    value=float(st.session_state.get("margin_threshold_pct", 10.0)),
-                    step=0.5,
-                    key="margin_threshold_pct",
+            show_data_grid(missing_queue_df.head(50), keep_input_order=True)
+
+        section_heading("옵션 원가 입력", level=3)
+        option_master = (
+            order_df.groupby(["option_product_label", "product_name", "option_name"], as_index=False)
+            .agg(recent_order_date=("date", lambda s: pd.to_datetime(s, errors="coerce").max()))
+            .sort_values("recent_order_date", ascending=False)
+        )
+        option_choices = option_master["option_product_label"].dropna().astype(str).unique().tolist()
+        if not option_choices:
+            st.caption("원가 입력 대상 옵션이 없습니다.")
+        else:
+            default_option = option_choices[0]
+            if not missing_queue_df.empty:
+                default_option = str(missing_queue_df.iloc[0]["option_product_label"])
+            with st.form("margin_cost_input_form", clear_on_submit=False):
+                selected_option_label = st.selectbox(
+                    "옵션상품명",
+                    options=option_choices,
+                    index=max(0, option_choices.index(default_option)) if default_option in option_choices else 0,
+                    key="margin_cost_option_select",
                 )
-            with threshold_col2:
+                selected_row = option_master[option_master["option_product_label"] == selected_option_label].iloc[0]
                 st.caption(
-                    "임계치 미만 옵션은 경고 대상으로 분류됩니다. "
-                    "쿠폰/할인은 순매출(`net_revenue`)에 이미 반영되어 마진 계산에 포함됩니다."
+                    f"매핑: 상품명 `{selected_row['product_name']}` / 옵션명 "
+                    f"`{str(selected_row['option_name'] or '').strip()}`"
                 )
+                input_col1, input_col2, input_col3 = st.columns(3)
+                with input_col1:
+                    input_unit_cost = st.number_input("단위원가", min_value=0, value=0, step=100)
+                with input_col2:
+                    input_pack_cost = st.number_input("포장/부자재 원가", min_value=0, value=0, step=100)
+                with input_col3:
+                    input_fulfillment_cost = st.number_input("풀필먼트 원가", min_value=0, value=0, step=100)
+                effective_col, note_col = st.columns([2, 3])
+                with effective_col:
+                    input_effective_from = st.date_input(
+                        "원가 적용일",
+                        value=margin_base_date,
+                        key="margin_cost_effective_from",
+                    )
+                with note_col:
+                    input_note = st.text_input("메모(선택)", value="", key="margin_cost_note")
+                save_submitted = st.form_submit_button("원가 저장", type="primary")
+            if save_submitted:
+                try:
+                    save_result = save_option_cost_history(
+                        product_name=str(selected_row["product_name"]),
+                        option_name=str(selected_row["option_name"] or ""),
+                        effective_from=input_effective_from,
+                        unit_cost=int(input_unit_cost),
+                        pack_cost=int(input_pack_cost),
+                        fulfillment_cost=int(input_fulfillment_cost),
+                        note=input_note,
+                    )
+                    load_option_cost_history.clear()
+                    if save_result == "created":
+                        st.success("원가 이력이 신규 저장되었습니다.")
+                    else:
+                        st.success("동일 옵션/적용일 데이터가 있어 원가 이력을 갱신했습니다.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"원가 저장 중 오류가 발생했습니다: {exc}")
 
-            total_revenue = float(pd.to_numeric(margin_df["net_revenue"], errors="coerce").fillna(0).sum())
-            total_cost = float(pd.to_numeric(margin_df["estimated_cost"], errors="coerce").fillna(0).sum())
-            total_margin = float(pd.to_numeric(margin_df["margin_amount"], errors="coerce").fillna(0).sum())
+        if not cost_history_df.empty:
+            section_heading("옵션 원가 이력(최근)", level=3)
+            history_show = cost_history_df.copy()
+            history_show["option_product_label"] = [
+                _option_product_label(a, b) for a, b in zip(history_show["product_name"], history_show["option_name"])
+            ]
+            history_show["option_product_label"] = history_show["option_product_label"].map(_option_grid_display_text)
+            history_cols = [
+                "option_product_label",
+                "unit_cost",
+                "pack_cost",
+                "fulfillment_cost",
+                "effective_from",
+                "effective_to",
+                "updated_at",
+                "note",
+            ]
+            show_data_grid(history_show[history_cols].head(40), keep_input_order=True)
+
+        section_heading("마진 결과표", level=3)
+        margin_view_df = _build_margin_result_view(
+            order_df,
+            cost_history_df,
+            start_date=margin_start_date,
+            end_date=margin_base_date,
+        )
+        if margin_view_df.empty:
+            st.caption("조회 구간에 마진 계산 대상 데이터가 없습니다.")
+        else:
+            total_revenue = float(pd.to_numeric(margin_view_df["net_revenue"], errors="coerce").fillna(0).sum())
+            total_cost = float(pd.to_numeric(margin_view_df["estimated_cost"], errors="coerce").fillna(0).sum())
+            total_margin = float(pd.to_numeric(margin_view_df["margin_amount"], errors="coerce").fillna(0).sum())
             margin_rate = (total_margin / total_revenue * 100.0) if total_revenue > 0 else 0.0
-            low_margin_df = margin_df[
-                pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < margin_threshold_pct
-            ]
-            critical_margin_df = margin_df[
-                pd.to_numeric(margin_df["margin_rate_pct"], errors="coerce").fillna(0) < 0
-            ]
-
-            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            no_cost_count = int((margin_view_df["cost_apply_status"] != "원가적용완료").sum())
+            m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("총 순매출", f"{total_revenue:,.0f}원")
-            m2.metric("총 추정원가", f"{total_cost:,.0f}원")
+            m2.metric("총 적용원가", f"{total_cost:,.0f}원")
             m3.metric("총 마진액", f"{total_margin:,.0f}원")
             m4.metric("평균 마진율", f"{margin_rate:.1f}%")
-            m5.metric(f"임계치 미만({margin_threshold_pct:.1f}%↓)", f"{len(low_margin_df):,}개")
-            m6.metric("긴급(마진율<0%)", f"{len(critical_margin_df):,}개")
-
-            if len(critical_margin_df) > 0:
-                st.warning("마진율이 0% 미만인 옵션이 있습니다. 가격/쿠폰/배송비 규칙을 우선 점검하세요.")
-            elif len(low_margin_df) > 0:
-                st.info("임계치 미만 옵션이 있습니다. 옵션 단가/프로모션 조건을 점검하세요.")
-
+            m5.metric("원가 미적용 옵션", f"{no_cost_count:,}개")
+            if no_cost_count > 0:
+                st.warning("일부 옵션은 유효 원가가 없어 마진이 과대 계산될 수 있습니다. 미입력 옵션 큐를 확인하세요.")
+            margin_show = margin_view_df.copy()
+            margin_show["option_product_label"] = margin_show["option_product_label"].map(_option_grid_display_text)
             margin_cols = [
-                "product_name",
-                "option_name",
-                "delivery_fee_type",
+                "option_product_label",
                 "order_count",
                 "order_quantity",
                 "net_revenue",
                 "estimated_cost",
                 "margin_amount",
                 "margin_rate_pct",
+                "applied_unit_cost",
+                "latest_effective_from",
+                "cost_apply_status",
             ]
-            st.caption("마진율 기준 취약 옵션(하위)과 고마진 옵션(상위)을 함께 점검하세요.")
-            hi_col, lo_col = st.columns(2)
-            with hi_col:
-                st.markdown("#### 고마진 옵션 Top10")
-                hi = margin_df.sort_values("margin_rate_pct", ascending=False).head(10)
-                show_data_grid(hi[margin_cols], keep_input_order=True)
-            with lo_col:
-                st.markdown("#### 저마진 옵션 Top10")
-                lo = margin_df.sort_values("margin_rate_pct", ascending=True).head(10)
-                show_data_grid(lo[margin_cols], keep_input_order=True)
+            show_data_grid(margin_show[margin_cols], keep_input_order=True)
 
     with tab_kpi:
         section_heading("KPI")
