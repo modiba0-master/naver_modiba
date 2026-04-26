@@ -107,6 +107,36 @@ def _option_name_display(option_name: object) -> str:
     return s if s else "(옵션없음)"
 
 
+def _option_norm_key(option_name: object) -> str:
+    """옵션 문자열을 규격 키로 정규화한다.
+
+    예)
+    - 5kg (1kgX5팩), 5kg(1X5팩), 5kg(1kgX5) -> w5000_u1000_c5
+    - 5kg(500gX10팩) -> w5000_u500_c10
+    """
+    raw = str(option_name or "").strip().lower()
+    if not raw:
+        return "unknown_option"
+    s = raw.replace(" ", "")
+    s = s.replace("×", "x").replace("*", "x").replace("팩", "")
+    s = s.replace("[", "(").replace("]", ")")
+    total_match = re.search(r"(\d+(?:\.\d+)?)kg", s)
+    total_g: int | None = None
+    if total_match:
+        total_g = int(round(float(total_match.group(1)) * 1000))
+    detail_match = re.search(r"\((\d+(?:\.\d+)?)(kg|g)?x(\d+)\)", s)
+    if detail_match:
+        unit_num = float(detail_match.group(1))
+        unit_type = detail_match.group(2) or "kg"
+        unit_g = int(round(unit_num * 1000)) if unit_type == "kg" else int(round(unit_num))
+        count = int(detail_match.group(3))
+        if total_g is None:
+            total_g = unit_g * count
+        return f"w{total_g}_u{unit_g}_c{count}"
+    fallback = re.sub(r"[^a-z0-9가-힣]+", "_", s).strip("_")
+    return fallback or "unknown_option"
+
+
 def _format_sales_date_label(d: date) -> str:
     """매출 집계일(달력) + 요일 — KPI 일자 행에 통일 표기."""
     return f"{d.isoformat()} ({_WEEKDAY_KO[d.weekday()]})"
@@ -1066,8 +1096,10 @@ def load_option_cost_history() -> pd.DataFrame:
             text(
                 """
                 SELECT
+                    id,
                     product_name,
                     COALESCE(option_name, '') AS option_name,
+                    COALESCE(option_norm_key, '') AS option_norm_key,
                     option_code,
                     unit_cost,
                     pack_cost,
@@ -1087,6 +1119,57 @@ def load_option_cost_history() -> pd.DataFrame:
         return pd.DataFrame(rows)
     except Exception:
         return pd.DataFrame()
+    finally:
+        db.close()
+
+
+def ensure_option_norm_key_migration() -> tuple[bool, int]:
+    """원가 테이블에 option_norm_key 컬럼/값을 보장한다. (컬럼생성여부, 백필건수)"""
+    db = SessionLocal()
+    added_col = False
+    updated_rows = 0
+    try:
+        col_exists = db.execute(
+            text(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'product_option_cost_master'
+                  AND column_name = 'option_norm_key'
+                """
+            )
+        ).scalar()
+        if int(col_exists or 0) == 0:
+            db.execute(text("ALTER TABLE product_option_cost_master ADD COLUMN option_norm_key VARCHAR(120) NULL"))
+            db.execute(
+                text(
+                    "CREATE INDEX idx_option_cost_norm_key ON product_option_cost_master (option_norm_key, effective_from)"
+                )
+            )
+            added_col = True
+            db.commit()
+        rows = db.execute(
+            text(
+                """
+                SELECT id, COALESCE(option_name, '') AS option_name
+                FROM product_option_cost_master
+                WHERE option_norm_key IS NULL OR option_norm_key = ''
+                """
+            )
+        ).mappings().all()
+        if rows:
+            payload = [
+                {"id": int(r["id"]), "option_norm_key": _option_norm_key(r["option_name"])}
+                for r in rows
+            ]
+            db.execute(
+                text("UPDATE product_option_cost_master SET option_norm_key = :option_norm_key WHERE id = :id"),
+                payload,
+            )
+            updated_rows = len(payload)
+            db.commit()
+        return added_col, updated_rows
     finally:
         db.close()
 
@@ -1127,6 +1210,7 @@ def save_option_cost_history(
                 INSERT INTO product_option_cost_master (
                     product_name,
                     option_name,
+                    option_norm_key,
                     unit_cost,
                     pack_cost,
                     fulfillment_cost,
@@ -1139,6 +1223,7 @@ def save_option_cost_history(
                 VALUES (
                     :product_name,
                     :option_name,
+                    :option_norm_key,
                     :unit_cost,
                     :pack_cost,
                     :fulfillment_cost,
@@ -1153,6 +1238,7 @@ def save_option_cost_history(
                     pack_cost = VALUES(pack_cost),
                     fulfillment_cost = VALUES(fulfillment_cost),
                     default_shipping_cost = VALUES(default_shipping_cost),
+                    option_norm_key = VALUES(option_norm_key),
                     note = VALUES(note),
                     is_active = 1,
                     effective_to = NULL
@@ -1161,6 +1247,7 @@ def save_option_cost_history(
             {
                 "product_name": product_name.strip(),
                 "option_name": option_name.strip(),
+                "option_norm_key": _option_norm_key(option_name),
                 "effective_from": effective_from,
                 "unit_cost": int(unit_cost),
                 "pack_cost": int(pack_cost),
@@ -1189,37 +1276,41 @@ def seed_zero_option_cost_history(
         return 0, 0
     options = (
         scoped.assign(option_name_norm=scoped["option_name"].fillna("").astype(str))
-        .groupby(["product_name", "option_name_norm"], as_index=False)
+        .assign(option_norm_key=lambda d: d["option_name_norm"].map(_option_norm_key))
+        .groupby(["product_name", "option_name_norm", "option_norm_key"], as_index=False)
         .size()
     )
     if options.empty:
         return 0, 0
-    candidates = [
-        (str(row["product_name"]).strip(), str(row["option_name_norm"]).strip())
-        for _, row in options.iterrows()
-    ]
+    norm_candidates: dict[str, str] = {}
+    for _, row in options.iterrows():
+        option_name = str(row["option_name_norm"]).strip()
+        norm_key = _option_norm_key(option_name)
+        if norm_key not in norm_candidates:
+            norm_candidates[norm_key] = option_name
     db = SessionLocal()
     try:
         existing_rows = db.execute(
             text(
                 """
-                SELECT product_name, COALESCE(option_name, '') AS option_name
+                SELECT COALESCE(option_norm_key, '') AS option_norm_key
                 FROM product_option_cost_master
                 WHERE effective_from = :effective_from
                 """
             ),
             {"effective_from": effective_from},
         ).mappings().all()
-        existing_keys = {(str(r["product_name"]).strip(), str(r["option_name"]).strip()) for r in existing_rows}
-        new_keys = [k for k in candidates if k not in existing_keys]
-        if not new_keys:
-            return 0, len(candidates)
+        existing_keys = {str(r["option_norm_key"]).strip() for r in existing_rows}
+        new_norm_keys = [k for k in norm_candidates.keys() if k not in existing_keys]
+        if not new_norm_keys:
+            return 0, len(norm_candidates)
         db.execute(
             text(
                 """
                 INSERT INTO product_option_cost_master (
                     product_name,
                     option_name,
+                    option_norm_key,
                     unit_cost,
                     pack_cost,
                     fulfillment_cost,
@@ -1232,6 +1323,7 @@ def seed_zero_option_cost_history(
                 VALUES (
                     :product_name,
                     :option_name,
+                    :option_norm_key,
                     0,
                     0,
                     0,
@@ -1247,16 +1339,17 @@ def seed_zero_option_cost_history(
             ),
             [
                 {
-                    "product_name": product_name,
-                    "option_name": option_name,
+                    "product_name": "__OPTION_NORM__",
+                    "option_name": norm_candidates[norm_key],
+                    "option_norm_key": norm_key,
                     "effective_from": effective_from,
                     "note": "초기생성(0원가)",
                 }
-                for product_name, option_name in new_keys
+                for norm_key in new_norm_keys
             ],
         )
         db.commit()
-        return len(new_keys), len(candidates) - len(new_keys)
+        return len(new_norm_keys), len(norm_candidates) - len(new_norm_keys)
     finally:
         db.close()
 
@@ -1271,10 +1364,11 @@ def _effective_cost_row(
     if costs.empty:
         return None
     stat_ts = pd.Timestamp(stat_date)
-    c = costs[
-        (costs["product_name"].astype(str) == str(product_name))
-        & (costs["option_name"].astype(str) == str(option_name))
-    ].copy()
+    norm_key = _option_norm_key(option_name)
+    c = costs[costs["option_norm_key"].astype(str) == str(norm_key)].copy()
+    if c.empty:
+        # fallback: 마이그레이션 전/예외 케이스 호환
+        c = costs[costs["option_name"].astype(str) == str(option_name)].copy()
     if c.empty:
         return None
     c["effective_from"] = pd.to_datetime(c["effective_from"], errors="coerce")
@@ -1306,7 +1400,8 @@ def _build_missing_option_queue(
         o["option_product_label"] = [_option_product_label(a, b) for a, b in zip(o["product_name"], o["option_name"])]
     o["option_name_norm"] = o["option_name"].fillna("").astype(str)
     options = (
-        o.groupby(["product_name", "option_name_norm", "option_product_label"], as_index=False)
+        o.assign(option_norm_key=o["option_name_norm"].map(_option_norm_key))
+        .groupby(["option_name_norm", "option_norm_key"], as_index=False)
         .agg(
             recent_order_date=("date", lambda s: pd.to_datetime(s, errors="coerce").max()),
             recent_7d_revenue=(
@@ -1319,13 +1414,13 @@ def _build_missing_option_queue(
         c = costs.copy()
         c["effective_from"] = pd.to_datetime(c["effective_from"], errors="coerce").dt.date
         covered = c[c["effective_from"].notna() & (c["effective_from"] <= as_of_date)][
-            ["product_name", "option_name"]
+            ["option_norm_key"]
         ].drop_duplicates()
         covered["covered"] = 1
         options = options.merge(
             covered,
-            left_on=["product_name", "option_name_norm"],
-            right_on=["product_name", "option_name"],
+            left_on=["option_norm_key"],
+            right_on=["option_norm_key"],
             how="left",
         )
     else:
@@ -1335,8 +1430,9 @@ def _build_missing_option_queue(
     if missing.empty:
         return missing
     missing["recent_order_date"] = pd.to_datetime(missing["recent_order_date"], errors="coerce").dt.date
+    missing["option_name_norm"] = missing["option_name_norm"].map(_option_name_display)
     return missing[
-        ["option_product_label", "product_name", "option_name_norm", "recent_order_date", "recent_7d_revenue", "cost_apply_status"]
+        ["option_name_norm", "recent_order_date", "recent_7d_revenue", "cost_apply_status"]
     ].rename(columns={"option_name_norm": "option_name"}).sort_values(
         ["recent_7d_revenue", "recent_order_date"], ascending=[False, False]
     )
@@ -1354,15 +1450,14 @@ def _build_margin_result_view(
     o = frame[(frame["date"].dt.date >= start_date) & (frame["date"].dt.date <= end_date)].copy()
     if o.empty:
         return pd.DataFrame()
-    if "option_product_label" not in o.columns:
-        o["option_product_label"] = [_option_product_label(a, b) for a, b in zip(o["product_name"], o["option_name"])]
     o["option_name_norm"] = o["option_name"].fillna("").astype(str)
+    o["option_norm_key"] = o["option_name_norm"].map(_option_norm_key)
     o["stat_date"] = o["date"].dt.date
     o["order_quantity_num"] = pd.to_numeric(o["quantity"], errors="coerce").fillna(0)
     o["net_revenue_num"] = pd.to_numeric(o["net_revenue"], errors="coerce").fillna(0)
     day_rows = (
         o.groupby(
-            ["stat_date", "product_name", "option_name_norm", "option_product_label"],
+            ["stat_date", "option_name_norm", "option_norm_key"],
             as_index=False,
         )
         .agg(
@@ -1370,14 +1465,15 @@ def _build_margin_result_view(
             net_revenue=("net_revenue_num", "sum"),
             order_count=("order_id", lambda s: s.astype(str).replace("", pd.NA).dropna().nunique()),
         )
-        .sort_values(["option_product_label", "stat_date"])
+        .sort_values(["option_norm_key", "stat_date"])
     )
     cost_rows: list[dict[str, object]] = []
     for _, row in day_rows.iterrows():
         stat_date = row["stat_date"]
-        product_name = str(row["product_name"])
         option_name = str(row["option_name_norm"])
-        cost_row = _effective_cost_row(costs, product_name=product_name, option_name=option_name, stat_date=stat_date)
+        cost_row = _effective_cost_row(
+            costs, product_name="__OPTION_NORM__", option_name=option_name, stat_date=stat_date
+        )
         if cost_row is None:
             unit_cost = 0.0
             pack_cost = 0.0
@@ -1396,7 +1492,7 @@ def _build_margin_result_view(
         cost_rows.append(
             {
                 "stat_date": stat_date,
-                "option_product_label": row["option_product_label"],
+                "option_norm_key": row["option_norm_key"],
                 "option_name": _option_name_display(option_name),
                 "net_revenue": float(row["net_revenue"]),
                 "order_quantity": float(row["order_quantity"]),
@@ -1412,7 +1508,7 @@ def _build_margin_result_view(
     if calc.empty:
         return calc
     out = (
-        calc.groupby("option_product_label", as_index=False)
+        calc.groupby("option_norm_key", as_index=False)
         .agg(
             option_name=("option_name", "first"),
             net_revenue=("net_revenue", "sum"),
@@ -1987,7 +2083,18 @@ def main_content() -> None:
 
     with tab_margin:
         section_heading("가격-매출-마진 방어판", level=3)
+        migration_msg = ""
+        try:
+            added_col, updated_rows = ensure_option_norm_key_migration()
+            if added_col:
+                migration_msg = "option_norm_key 컬럼을 생성했습니다."
+            if updated_rows > 0:
+                migration_msg = (migration_msg + " " if migration_msg else "") + f"기존 원가 {updated_rows}건을 정규화했습니다."
+        except Exception as exc:
+            st.warning(f"원가 정규화 마이그레이션 확인 중 오류: {exc}")
         cost_history_df = load_option_cost_history()
+        if migration_msg:
+            st.info(migration_msg)
         margin_base_col, margin_period_col = st.columns([2, 2])
         with margin_base_col:
             margin_base_date = st.date_input(
@@ -2056,18 +2163,20 @@ def main_content() -> None:
 
         section_heading("옵션 원가 입력", level=3)
         option_master = (
-            order_df.groupby(["option_product_label", "product_name", "option_name"], as_index=False)
+            order_df.assign(option_name_norm=order_df["option_name"].fillna("").astype(str))
+            .assign(option_norm_key=lambda d: d["option_name_norm"].map(_option_norm_key))
+            .groupby(["option_norm_key", "option_name_norm"], as_index=False)
             .agg(recent_order_date=("date", lambda s: pd.to_datetime(s, errors="coerce").max()))
             .sort_values("recent_order_date", ascending=False)
         )
-        option_master["option_name_display"] = option_master["option_name"].map(_option_name_display)
-        option_choices = option_master["option_product_label"].dropna().astype(str).unique().tolist()
+        option_master["option_name_display"] = option_master["option_name_norm"].map(_option_name_display)
+        option_choices = option_master["option_norm_key"].dropna().astype(str).unique().tolist()
         if not option_choices:
             st.caption("원가 입력 대상 옵션이 없습니다.")
         else:
             default_option = option_choices[0]
             if not missing_queue_df.empty:
-                default_option = str(missing_queue_df.iloc[0]["option_product_label"])
+                default_option = _option_norm_key(str(missing_queue_df.iloc[0]["option_name"]))
             with st.form("margin_cost_input_form", clear_on_submit=False):
                 selected_option_label = st.selectbox(
                     "옵션상품명",
@@ -2076,13 +2185,13 @@ def main_content() -> None:
                     key="margin_cost_option_select",
                     format_func=lambda key: str(
                         option_master.loc[
-                            option_master["option_product_label"] == key, "option_name_display"
+                            option_master["option_norm_key"] == key, "option_name_display"
                         ].iloc[0]
                     ),
                 )
-                selected_row = option_master[option_master["option_product_label"] == selected_option_label].iloc[0]
+                selected_row = option_master[option_master["option_norm_key"] == selected_option_label].iloc[0]
                 st.caption(
-                    f"선택 옵션상품명: `{_option_name_display(selected_row['option_name'])}`"
+                    f"선택 옵션상품명: `{_option_name_display(selected_row['option_name_norm'])}`"
                 )
                 input_col1, input_col2, input_col3 = st.columns(3)
                 with input_col1:
@@ -2104,8 +2213,8 @@ def main_content() -> None:
             if save_submitted:
                 try:
                     save_result = save_option_cost_history(
-                        product_name=str(selected_row["product_name"]),
-                        option_name=str(selected_row["option_name"] or ""),
+                        product_name="__OPTION_NORM__",
+                        option_name=str(selected_row["option_name_norm"] or ""),
                         effective_from=input_effective_from,
                         unit_cost=int(input_unit_cost),
                         pack_cost=int(input_pack_cost),
