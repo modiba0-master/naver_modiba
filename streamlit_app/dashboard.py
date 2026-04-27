@@ -281,7 +281,7 @@ def fetch_order_data(
     if start_date is not None and end_date is not None:
         params["start_date"] = datetime.combine(start_date, time.min, tzinfo=KST).isoformat()
         params["end_date"] = datetime.combine(end_date, time(23, 59, 59), tzinfo=KST).isoformat()
-    payload = _http_get_json_with_retry(f"{url}/analytics/orders-raw", params=params)
+    payload = _http_get_json_with_retry(f"{url}/analytics/orders-raw-light", params=params)
     items = payload.get("items", [])
     return pd.DataFrame(items)
 
@@ -1680,7 +1680,8 @@ def main_content() -> None:
         fetch_order_data.clear()
         fetch_db_stats.clear()
 
-    _safe_autorefresh(interval_ms=60000, key="naver_modiba_dashboard_autorefresh")
+    # 관리자 로그인 후 대시보드 화면 자동 새로고침은 5분 간격으로 운용한다.
+    _safe_autorefresh(interval_ms=300000, key="naver_modiba_dashboard_autorefresh")
 
     apply_dashboard_theme()
 
@@ -2396,7 +2397,7 @@ def main_content() -> None:
                 "latest_effective_from",
                 "cost_apply_status",
             ]
-            show_data_grid(margin_show[margin_cols], keep_input_order=True)
+            show_data_grid(margin_show[margin_cols].head(50), keep_input_order=True)
 
     with tab_kpi:
         section_heading("KPI")
@@ -2575,7 +2576,7 @@ def main_content() -> None:
             ]
         ]
         daily_kpi = append_daily_total_row(daily_kpi)
-        show_data_grid(daily_kpi)
+        show_data_grid(daily_kpi.tail(31), keep_input_order=True)
 
     with tab_detail:
         section_heading("분석상세")
@@ -2635,7 +2636,7 @@ def main_content() -> None:
                     "amount_per_order",
                 ]
             ]
-            show_data_grid(product_summary, keep_input_order=True)
+            show_data_grid(product_summary.head(50), keep_input_order=True)
 
         with tab_option_sales:
             option_name_summary = _prepare_analysis_summary(
@@ -2655,13 +2656,13 @@ def main_content() -> None:
                     "amount_per_order",
                 ]
             ]
-            show_data_grid(option_name_summary, keep_input_order=True)
+            show_data_grid(option_name_summary.head(50), keep_input_order=True)
 
         with st.expander("상세 주문 원장 보기", expanded=False):
             detail_ledger, guidance_text = _prepare_detail_ledger_for_display(analysis_filtered_df)
             if guidance_text:
                 st.caption(f"참조 · 매출집계일 안내: {guidance_text}")
-            show_data_grid(detail_ledger)
+            show_data_grid(detail_ledger.head(30), keep_input_order=True)
 
 
 if _require_login():

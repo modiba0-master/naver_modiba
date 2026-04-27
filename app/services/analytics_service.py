@@ -11,6 +11,7 @@ from app.schemas import (
     HeatmapCell,
     HourRevenueRow,
     OrderLedgerItem,
+    OrderRawLightItem,
     OrderRawItem,
     OrdersByDateItem,
 )
@@ -245,6 +246,53 @@ def get_claim_orders_raw(
         }
         out.append(item)
     return [OrderRawItem.model_validate(x) for x in out]
+
+
+def get_orders_raw_light(
+    db: Session,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    revenue_basis: RevenueBasis = "payment",
+) -> list[OrderRawLightItem]:
+    """대시보드 기본 탭용 경량 주문 목록."""
+    raw_items = get_orders_raw(
+        db,
+        start_date=start_date,
+        end_date=end_date,
+        revenue_basis=revenue_basis,
+    )
+    out: list[dict[str, Any]] = []
+    for item in raw_items:
+        p = item.model_dump()
+        out.append(
+            {
+                "order_id": p["order_id"],
+                "content_order_no": p.get("content_order_no"),
+                "date": p["date"],
+                "business_date": p["business_date"],
+                "aggregation_window_kst": p["aggregation_window_kst"],
+                "order_calendar_date": p["order_calendar_date"],
+                "payment_date": p["payment_date"],
+                "buyer_name": p["buyer_name"],
+                "buyer_id": p["buyer_id"],
+                "receiver_name": p["receiver_name"],
+                "address": p["address"],
+                "product_name": p["product_name"],
+                "option_name": p["option_name"],
+                "quantity": p["quantity"],
+                "amount": p["amount"],
+                "delivery_fee_type": p.get("delivery_fee_type", ""),
+                "delivery_fee_amount": p.get("delivery_fee_amount", 0),
+                "delivery_fee_discount_amount": p.get("delivery_fee_discount_amount", 0),
+                "jeju_island_extra_fee": p.get("jeju_island_extra_fee", 0),
+                "expected_settlement_amount": p.get("expected_settlement_amount", 0),
+                "refund_amount": p.get("refund_amount", 0),
+                "cancel_amount": p.get("cancel_amount", 0),
+                "net_revenue": p.get("net_revenue", 0),
+                "order_status": p["order_status"],
+            }
+        )
+    return [OrderRawLightItem.model_validate(x) for x in out]
 
 
 def get_orders_ledger(

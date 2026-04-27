@@ -91,6 +91,39 @@ class OrdersRawResponse(BaseModel):
     items: List[OrderRawItem]
 
 
+class OrderRawLightItem(BaseModel):
+    """대시보드 기본 조회용 경량 주문 레코드."""
+
+    order_id: str
+    content_order_no: str | None = None
+    date: date
+    business_date: date
+    aggregation_window_kst: str
+    order_calendar_date: date
+    payment_date: datetime
+    buyer_name: str
+    buyer_id: str
+    receiver_name: str
+    address: str
+    product_name: str
+    option_name: str
+    quantity: int
+    amount: int
+    delivery_fee_type: str = ""
+    delivery_fee_amount: int = 0
+    delivery_fee_discount_amount: int = 0
+    jeju_island_extra_fee: int = 0
+    expected_settlement_amount: int = 0
+    refund_amount: int = 0
+    cancel_amount: int = 0
+    net_revenue: int = 0
+    order_status: str
+
+
+class OrdersRawLightResponse(BaseModel):
+    items: List[OrderRawLightItem]
+
+
 class OrderLedgerItem(BaseModel):
     """네이버 주문 원장(확장 저장 컬럼 포함). 대시보드가 아닌 운영/다운로드용."""
 

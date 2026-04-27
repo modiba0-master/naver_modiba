@@ -12,6 +12,7 @@ from app.schemas import (
     HourRevenueResponse,
     OrdersByDateResponse,
     OrdersLedgerResponse,
+    OrdersRawLightResponse,
     OrdersRawResponse,
     RevenueResponse,
 )
@@ -20,6 +21,7 @@ from app.services.analytics_service import (
     get_db_order_stats,
     get_orders_ledger,
     get_orders_by_date,
+    get_orders_raw_light,
     get_orders_raw,
     get_revenue_by_hour,
     get_revenue_heatmap,
@@ -64,6 +66,24 @@ def orders_raw(
 ):
     """기간이 있으면 DB에서 ``business_date``(결제 기준) 등 귀속일 컬럼으로 필터 — ``payment_date`` 구간이 아님."""
     items = get_orders_raw(
+        db, start_date=start_date, end_date=end_date, revenue_basis=revenue_basis
+    )
+    items = [item.model_dump(mode="json") for item in items]
+    return JSONResponse(
+        content={"items": items},
+        media_type="application/json; charset=utf-8",
+    )
+
+
+@router.get("/orders-raw-light", response_model=OrdersRawLightResponse)
+def orders_raw_light(
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    revenue_basis: RevenueBasis = "payment",
+    db: Session = Depends(get_db),
+):
+    """대시보드 기본 탭용 경량 주문 목록."""
+    items = get_orders_raw_light(
         db, start_date=start_date, end_date=end_date, revenue_basis=revenue_basis
     )
     items = [item.model_dump(mode="json") for item in items]
