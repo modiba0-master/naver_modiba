@@ -427,25 +427,32 @@ def normalize_order_data(frame: pd.DataFrame) -> pd.DataFrame:
     df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
-    df["delivery_fee_amount"] = pd.to_numeric(df.get("delivery_fee_amount", 0), errors="coerce").fillna(0)
-    df["delivery_fee_discount_amount"] = pd.to_numeric(
-        df.get("delivery_fee_discount_amount", 0), errors="coerce"
+    delivery_fee_amount = pd.to_numeric(
+        df.get("delivery_fee_amount", 0).astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
     ).fillna(0)
-    df["jeju_island_extra_fee"] = pd.to_numeric(df.get("jeju_island_extra_fee", 0), errors="coerce").fillna(0)
+    jeju_island_extra_fee = pd.to_numeric(
+        df.get("jeju_island_extra_fee", 0).astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    ).fillna(0)
+    delivery_fee_discount_amount = pd.to_numeric(
+        df.get("delivery_fee_discount_amount", 0).astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    ).fillna(0)
+    df["delivery_fee_amount"] = delivery_fee_amount
+    df["jeju_island_extra_fee"] = jeju_island_extra_fee
+    df["delivery_fee_discount_amount"] = delivery_fee_discount_amount
     if "delivery_fee_type" not in df.columns:
         df["delivery_fee_type"] = ""
     df["delivery_fee_type"] = df["delivery_fee_type"].fillna("").astype(str)
-    # 배송유형은 DB 원천 배송비 금액(delivery_fee_amount) 기준으로만 판정한다.
-    # - 0원: 무료배송
-    # - 1,000원 이상: 유료배송
-    # 문자열("1,000") 입력도 안전하게 숫자로 변환한다.
-    raw_delivery_fee = pd.to_numeric(
-        df["delivery_fee_amount"].astype(str).str.replace(",", "", regex=False),
-        errors="coerce",
-    ).fillna(0)
-    df["delivery_fee_amount"] = raw_delivery_fee
-    df["shipping_fee_revenue"] = raw_delivery_fee.clip(lower=0)
-    df["is_paid_shipping"] = raw_delivery_fee >= 1000
+    # 배송비 실부담 기준으로 배송유형을 판정한다.
+    # 실부담 배송비 = 배송비 합계 + 제주/도서 추가배송비 - 배송비 할인액
+    # - 실부담 > 0: 유료배송
+    # - 실부담 <= 0: 무료배송
+    effective_shipping_fee = delivery_fee_amount + jeju_island_extra_fee - delivery_fee_discount_amount
+    df["effective_shipping_fee"] = effective_shipping_fee
+    df["shipping_fee_revenue"] = effective_shipping_fee.clip(lower=0)
+    df["is_paid_shipping"] = effective_shipping_fee > 0
     if "expected_settlement_amount" not in df.columns:
         df["expected_settlement_amount"] = 0
     df["expected_settlement_amount"] = pd.to_numeric(
