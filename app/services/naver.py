@@ -281,22 +281,57 @@ def _to_internal_order(item: dict[str, Any]) -> dict[str, Any]:
             _get_value(item, "productOrder.dispatchDueDate", "dispatchDueDate")
         ),
         "deliveryFeeType": str(
-            _get_value(item, "productOrder.deliveryFeeType", "deliveryFeeType") or ""
+            _get_value(
+                item,
+                # 최신 스키마: shippingFeeType(배송비 형태: FREE/PREPAID/COD ...)
+                "productOrder.shippingFeeType",
+                "shippingFeeType",
+                # 레거시/대체 키 fallback
+                "productOrder.deliveryFeeType",
+                "deliveryFeeType",
+            )
+            or ""
         ),
         "deliveryBundleGroupNo": str(
-            _get_value(item, "productOrder.deliveryBundleGroupUsable", "deliveryBundleGroupNo") or ""
+            _get_value(
+                item,
+                # 최신 스키마: packageNumber(배송비 묶음번호)
+                "productOrder.packageNumber",
+                "packageNumber",
+                # 레거시 fallback
+                "productOrder.deliveryBundleGroupUsable",
+                "deliveryBundleGroupNo",
+            )
+            or ""
         ),
         "deliveryFeePayType": str(
             _get_value(item, "productOrder.deliveryAttributeType", "deliveryFeePayType") or ""
         ),
         "deliveryFeeAmount": _to_int(
-            _get_value(item, "productOrder.shippingFeeAmount", "deliveryFeeAmount") or 0
+            _get_value(
+                item,
+                # 최신 스키마: deliveryFeeAmount(배송비 합계)
+                "productOrder.deliveryFeeAmount",
+                "deliveryFeeAmount",
+                # 레거시 fallback
+                "productOrder.shippingFeeAmount",
+            )
+            or 0
         ),
         "jejuIslandExtraFee": _to_int(
             _get_value(item, "productOrder.sectionDeliveryFee", "jejuIslandExtraFee") or 0
         ),
         "deliveryFeeDiscountAmount": _to_int(
-            _get_value(item, "productOrder.shippingDiscountAmount", "deliveryFeeDiscountAmount") or 0
+            _get_value(
+                item,
+                # 최신 스키마: deliveryDiscountAmount(배송비 할인액)
+                "productOrder.deliveryDiscountAmount",
+                "deliveryDiscountAmount",
+                # 레거시 fallback
+                "productOrder.shippingDiscountAmount",
+                "deliveryFeeDiscountAmount",
+            )
+            or 0
         ),
         "receiverContact1": str(
             _get_value(
