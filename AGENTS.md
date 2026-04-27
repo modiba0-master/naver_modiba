@@ -163,3 +163,36 @@
   3. `order_id` 단위 집계 전후(`is_paid_shipping`) 값 추적해 무료로 덮어써지는 지점 찾기.
   4. 필요 시 판정 기준을 `delivery_fee_amount` 원본 보존 컬럼으로 분리(`raw_delivery_fee_amount`) 후 집계.
   5. 검증 쿼리/표본 10건(무료 5, 유료 5)로 대시보드 결과 교차검증.
+
+## 대시보드 진행 메모 (2026-04-27, 점심)
+- **배송비 판정/적재 이슈 해결**
+  - 대시보드 배송 판정 로직을 단일 금액 기준에서 실부담 기준으로 수정:
+    - `effective_shipping_fee = delivery_fee_amount + jeju_island_extra_fee - delivery_fee_discount_amount`
+    - `effective_shipping_fee > 0` 유료배송, 그 외 무료배송.
+  - `app/services/naver.py` 네이버 필드 매핑 보강:
+    - `deliveryFeeAmount` 우선 경로를 `productOrder.deliveryFeeAmount`로 수정(`shippingFeeAmount`는 fallback).
+    - 할인액을 `productOrder.deliveryDiscountAmount` 우선으로 수정(`shippingDiscountAmount` fallback).
+    - 배송비 형태 `shippingFeeType`, 묶음번호 `packageNumber` 경로 추가.
+  - 특정 주문 `2026042788722081` 검증:
+    - 초기 0 저장 -> 재동기화 후 `delivery_fee_amount=3500`, `delivery_fee_discount_amount=1000`, 실부담 2500으로 정상 반영 확인.
+- **성능 1차 개선 반영**
+  - `orders-raw-light` 신규 API 추가:
+    - 파일: `app/schemas.py`, `app/services/analytics_service.py`, `app/routers/analytics.py`.
+    - 대시보드 기본 조회를 `/analytics/orders-raw-light`로 전환.
+  - 대용량 그리드 초기 렌더 행 제한:
+    - 마진표 50행, 일자 KPI 31행, 분석상세 상품/옵션 50행, 상세 원장 30행.
+  - 대시보드 자동 새로고침 간격을 5분으로 조정.
+- **성능 2차 개선(변경감지 기반 증분 갱신)**
+  - `db-stats` 스냅샷(`orders_count`, `latest_payment_date`, `latest_business_date`) 변경 시에만 주문 재조회.
+  - 강제 리프레시 슬롯(KST):
+    - 기본: 매시 `00분`, `30분`
+    - 피크: `13:30~14:00`, `15:30~16:00` 구간 `30/40/50분`
+  - 수동 `강제 새로고침` 버튼 1개 추가.
+  - API 실패 시 기존 `last_good_order_df` fallback 유지.
+- **배포 상태**
+  - 관련 커밋 모두 `main` 푸시 및 Railway 배포 `SUCCESS` 확인.
+  - 최신 성능 관련 커밋: `243cd06` (증분 갱신 + 강제 슬롯 + 수동 강제).
+- **다음 호출 즉시 점검 항목**
+  1. 운영 화면에서 증분 갱신이 기대대로 동작하는지(변경 없을 때 재조회 스킵) 확인.
+  2. 오후 피크 슬롯(13:30/13:40/13:50, 15:30/15:40/15:50) 실제 강제 갱신 로그/화면 반영 확인.
+  3. 체감속도 추가 개선 필요 시 탭별 lazy compute(선택 탭만 무거운 집계) 3차 최적화 검토.
