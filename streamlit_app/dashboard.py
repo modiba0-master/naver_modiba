@@ -329,6 +329,22 @@ def _safe_autorefresh(interval_ms: int, key: str) -> None:
             st.session_state["_autorefresh_component_warned"] = True
 
 
+def _is_forced_refresh_slot(now_kst: datetime) -> tuple[bool, str]:
+    """강제 동기화 슬롯 판정 (KST 기준).
+
+    - 기본: 매시 00분, 30분
+    - 피크: 13:30~14:00, 15:30~16:00 구간 10분 간격(30/40/50분)
+    """
+    hour = now_kst.hour
+    minute = now_kst.minute
+
+    is_base_slot = minute in (0, 30)
+    is_peak_slot = (hour in (13, 15)) and (minute in (30, 40, 50))
+    is_slot = is_base_slot or is_peak_slot
+    slot_key = f"{now_kst.date().isoformat()}-{hour:02d}:{minute:02d}"
+    return is_slot, slot_key
+
+
 def _normalize_api_column_name(name: object) -> str:
     """API 응답 컬럼명을 내부 표준 snake_case로 정규화."""
     text = str(name).strip()
@@ -1676,7 +1692,8 @@ def _require_login() -> bool:
 
 
 def main_content() -> None:
-    if st.session_state.pop("_refresh_orders_after_login", False):
+    login_refresh_requested = bool(st.session_state.pop("_refresh_orders_after_login", False))
+    if login_refresh_requested:
         fetch_order_data.clear()
         fetch_db_stats.clear()
 
@@ -1688,6 +1705,7 @@ def main_content() -> None:
     api_base_url = DEFAULT_API_BASE_URL
     revenue_basis = "payment"
     db_subtitle = ""
+    ds: dict[str, object] | None = None
     try:
         ds = fetch_db_stats(api_base_url)
         _mark_api_success()
@@ -1706,6 +1724,11 @@ def main_content() -> None:
         "네이버 친절한 모디바 주문현황",
         subtitle=db_subtitle,
     )
+    force_refresh_clicked = st.button(
+        "강제 새로고침",
+        key="manual_force_refresh_orders_button",
+        help="변경 감지와 관계없이 주문 데이터를 즉시 다시 불러옵니다.",
+    )
     _render_api_health_caption()
 
     anchor = _kst_anchor_business_date()
@@ -1713,24 +1736,57 @@ def main_content() -> None:
 
     data_loaded_at = ""
     data_loaded_mode = "live"
-    try:
-        raw_df = fetch_order_data(api_base_url, revenue_basis, fetch_start, anchor)
-        order_df = normalize_order_data(raw_df)
-        st.session_state["last_good_order_df"] = order_df.copy()
-        data_loaded_at = format_now_kst()
-        st.session_state["last_data_loaded_at"] = data_loaded_at
-        st.session_state["last_data_loaded_mode"] = "live"
-        _mark_api_success()
-    except Exception as exc:
-        _mark_api_failure(exc)
-        cached_df = st.session_state.get("last_good_order_df")
-        if isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
-            order_df = cached_df.copy()
-            data_loaded_at = st.session_state.get("last_data_loaded_at", "")
-            data_loaded_mode = "fallback"
-        else:
-            st.error("주문 데이터를 불러오지 못했습니다. 사이드바 API URL을 확인하세요.")
-            st.stop()
+    now_kst = datetime.now(KST)
+    is_force_slot, force_slot_key = _is_forced_refresh_slot(now_kst)
+    last_force_slot_key = str(st.session_state.get("_orders_last_forced_slot_key", ""))
+    force_slot_trigger = is_force_slot and force_slot_key != last_force_slot_key
+    if force_slot_trigger:
+        st.session_state["_orders_last_forced_slot_key"] = force_slot_key
+
+    snapshot_key = ""
+    if isinstance(ds, dict):
+        snapshot_key = (
+            f"{int(ds.get('orders_count') or 0)}|"
+            f"{str(ds.get('latest_payment_date') or '')}|"
+            f"{str(ds.get('latest_business_date') or '')}"
+        )
+    prev_snapshot_key = str(st.session_state.get("orders_snapshot_key", ""))
+    snapshot_changed = bool(snapshot_key) and snapshot_key != prev_snapshot_key
+    cached_df = st.session_state.get("last_good_order_df")
+    has_cached = isinstance(cached_df, pd.DataFrame) and not cached_df.empty
+
+    should_reload_orders = (
+        force_refresh_clicked
+        or force_slot_trigger
+        or (not has_cached)
+        or snapshot_changed
+        or login_refresh_requested
+    )
+
+    if should_reload_orders:
+        try:
+            raw_df = fetch_order_data(api_base_url, revenue_basis, fetch_start, anchor)
+            order_df = normalize_order_data(raw_df)
+            st.session_state["last_good_order_df"] = order_df.copy()
+            data_loaded_at = format_now_kst()
+            st.session_state["last_data_loaded_at"] = data_loaded_at
+            st.session_state["last_data_loaded_mode"] = "live"
+            if snapshot_key:
+                st.session_state["orders_snapshot_key"] = snapshot_key
+            _mark_api_success()
+        except Exception as exc:
+            _mark_api_failure(exc)
+            if has_cached:
+                order_df = cached_df.copy()
+                data_loaded_at = st.session_state.get("last_data_loaded_at", "")
+                data_loaded_mode = "fallback"
+            else:
+                st.error("주문 데이터를 불러오지 못했습니다. 사이드바 API URL을 확인하세요.")
+                st.stop()
+    else:
+        order_df = cached_df.copy()
+        data_loaded_at = st.session_state.get("last_data_loaded_at", "")
+        data_loaded_mode = str(st.session_state.get("last_data_loaded_mode", "live"))
 
     if not data_loaded_at:
         data_loaded_at = st.session_state.get("last_data_loaded_at", "")
@@ -1747,7 +1803,6 @@ def main_content() -> None:
     if data_loaded_mode == "fallback":
         st.warning("네트워크/API 오류로 캐시된 마지막 정상 데이터를 표시 중입니다.")
 
-    now_kst = datetime.now(KST)
     default_end = anchor
     default_start = default_end
 
